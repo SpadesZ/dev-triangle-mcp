@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "dev-triangle-report": {
+      "command": "python",
+      "args": [
+        "C:\\path\\to\\dev-triangle-mcp\\antigravity_report_server.py"
+      ],
+      "env": {
+        "DEV_TRIANGLE_HOME": "C:\\Users\\you\\.dev-triangle",
+        "ANTIGRAVITY_HANDOFF_DIR": "C:\\Users\\you\\.dev-triangle\\antigravity-handoffs"
+      }
+    }
+  }
+}

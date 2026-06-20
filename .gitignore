@@ -1,0 +1,11 @@
+.dev-triangle/
+.dev-triangle-test/
+.dev-triangle-report-test/
+demo-output/
+logs/
+docs/LOCAL_PRODUCTIZATION_REPORT.md
+__pycache__/
+*.pyc
+*.log
+*.tmp
+.env

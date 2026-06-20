@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    name: Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile
+        run: python -m py_compile server.py antigravity_report_server.py tests/protocol_smoke.py tests/report_server_smoke.py
+      - name: Main MCP smoke
+        run: python tests/protocol_smoke.py
+      - name: Report MCP smoke
+        run: python tests/report_server_smoke.py

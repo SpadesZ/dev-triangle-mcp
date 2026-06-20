@@ -1,0 +1,26 @@
+[mcp_servers.dev_triangle]
+command = "python"
+args = ["C:\\path\\to\\dev-triangle-mcp\\server.py"]
+startup_timeout_sec = 10
+tool_timeout_sec = 300
+default_tools_approval_mode = "prompt"
+env_vars = [
+  "JULES_API_KEY",
+  "JULES_BASE_URL",
+  "ANTIGRAVITY_COMMAND",
+  "ANTIGRAVITY_EXECUTION_STYLE",
+  "ANTIGRAVITY_CHAT_MODE",
+  "ANTIGRAVITY_WINDOW_MODE",
+  "ANTIGRAVITY_AGY_MODEL",
+  "ANTIGRAVITY_AGY_PRINT_TIMEOUT",
+  "ANTIGRAVITY_AGY_SKIP_PERMISSIONS",
+]
+
+[mcp_servers.dev_triangle.env]
+DEV_TRIANGLE_HOME = "C:\\Users\\you\\.dev-triangle"
+ANTIGRAVITY_HANDOFF_DIR = "C:\\Users\\you\\.dev-triangle\\antigravity-handoffs"
+ANTIGRAVITY_EXECUTION_STYLE = "auto"
+ANTIGRAVITY_CHAT_MODE = "agent"
+ANTIGRAVITY_WINDOW_MODE = "new"
+ANTIGRAVITY_AGY_MODEL = "Gemini 3.5 Flash (Medium)"
+ANTIGRAVITY_AGY_PRINT_TIMEOUT = "30m"
