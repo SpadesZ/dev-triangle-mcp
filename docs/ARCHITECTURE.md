@@ -1,7 +1,8 @@
 # Architecture
 
 Dev Triangle MCP keeps orchestration, worker execution, and result reporting as
-separate responsibilities.
+separate responsibilities. The architecture is role-based first and
+tool-specific second.
 
 The design is intentionally conservative:
 
@@ -12,35 +13,70 @@ Workers report back through a narrow result surface.
 Runtime state stays outside the source tree.
 ```
 
-## Components
+## Role-Based Components
 
 ```mermaid
 flowchart LR
-  User["User"] --> Codex["Codex orchestrator"]
-  Codex --> Main["dev_triangle MCP server.py"]
-  Main --> Jules["Jules cloud coding API"]
-  Main --> Handoff["Handoff markdown"]
-  Handoff --> Agy["Antigravity agy --print"]
-  Agy --> Report["dev-triangle-report MCP"]
-  Report --> State["jobs.json + result markdown"]
-  Main --> State
-  State --> Codex
+  U(["User"]):::human --> O["Orchestrator<br/>plan, route, review"]:::orchestrator
+  O --> M["Dev Triangle MCP<br/>control plane + ledger"]:::mcp
+
+  M --> W["Cloud Code Worker<br/>remote code task"]:::worker
+  M --> V["Local Verifier<br/>local validation task"]:::verifier
+
+  W --> O
+  V --> R["Report-only MCP<br/>completion channel"]:::report
+  R --> S[("Ledger + Result Mailbox")]:::state
+  S --> O
+  O --> F(["Final answer"]):::human
+
+  classDef human fill:#f8fafc,stroke:#475569,color:#0f172a,stroke-width:1px;
+  classDef orchestrator fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px;
+  classDef mcp fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:2px;
+  classDef worker fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:2px;
+  classDef verifier fill:#ffedd5,stroke:#ea580c,color:#431407,stroke-width:2px;
+  classDef report fill:#fce7f3,stroke:#db2777,color:#500724,stroke-width:2px;
+  classDef state fill:#fef9c3,stroke:#ca8a04,color:#422006,stroke-width:2px;
 ```
+
+## Default Profile Mapping
+
+```mermaid
+flowchart LR
+  C["Codex<br/>orchestrator"]:::orchestrator --> M["dev_triangle<br/>server.py"]:::mcp
+  M --> J["Jules<br/>cloud code worker"]:::worker
+  M --> A["Antigravity agy<br/>local verifier"]:::verifier
+  J --> C
+  A --> R["dev-triangle-report<br/>report server"]:::report
+  R --> S[("jobs.json<br/>result markdown")]:::state
+  S --> C
+
+  classDef orchestrator fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px;
+  classDef mcp fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:2px;
+  classDef worker fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:2px;
+  classDef verifier fill:#ffedd5,stroke:#ea580c,color:#431407,stroke-width:2px;
+  classDef report fill:#fce7f3,stroke:#db2777,color:#500724,stroke-width:2px;
+  classDef state fill:#fef9c3,stroke:#ca8a04,color:#422006,stroke-width:2px;
+```
+
+Only the default profile is implemented and validated today. Other provider
+profiles should preserve the same role contracts before they are treated as
+stable.
 
 ## Responsibilities
 
-| Component | Responsibility | Should do | Should not do |
+| Role or component | Responsibility | Current default | Should not do |
 | --- | --- | --- | --- |
-| Codex | Orchestration | Understand the user, route work, review results | Blindly trust worker output |
-| `server.py` | Main MCP control plane | Jules calls, handoffs, ledger, health checks | Expose generic shell execution |
-| Jules | Cloud coding | Larger edits, repetitive work, PR/patch output | Receive local secrets |
-| Antigravity | Local verification | Local checks, environment validation, report writing | Control the whole workflow |
-| `antigravity_report_server.py` | Report-only MCP | Accept final worker reports | Create Jules sessions or launch tools |
-| `jobs.json` | Local ledger | Track statuses and result paths | Store secrets |
+| Orchestrator | Understand the user, route work, review results | Codex | Blindly trust worker output |
+| Main MCP control plane | Tools, handoffs, ledger, health checks | `server.py` | Expose generic shell execution |
+| Cloud Code Worker | Larger edits, repetitive work, PR/patch output | Jules | Receive local secrets |
+| Local Verifier | Local checks, environment validation, report writing | Antigravity `agy` | Control the whole workflow |
+| Report-only MCP | Accept final worker reports | `antigravity_report_server.py` | Create worker sessions or launch tools |
+| Ledger | Track statuses and result paths | `jobs.json` | Store secrets |
 
 ## Why Two MCP Servers?
 
-The full server and report server have different trust levels.
+The full server and report server have different trust levels. This is true for
+the current default profile and should remain true for future provider profiles.
 
 ### Full Server
 
@@ -56,8 +92,8 @@ File:
 server.py
 ```
 
-This server is for the orchestrator. It can call Jules, create and run
-Antigravity handoffs, inspect the ledger, and update jobs.
+This server is for the orchestrator. In the current profile, it can call Jules,
+create and run Antigravity handoffs, inspect the ledger, and update jobs.
 
 ### Report Server
 
@@ -73,15 +109,37 @@ File:
 antigravity_report_server.py
 ```
 
-This server is for workers. It exposes only:
+This server is for workers and verifiers. It exposes only:
 
 - `dev_triangle_report_health`
 - `complete_dev_triangle_handoff`
 
 This keeps worker agents focused. They can submit a result, but they cannot
-start unrelated cloud sessions or mutate the whole workflow.
+start unrelated sessions or mutate the whole workflow.
 
-## Antigravity Closed Loop
+## Local Verifier Closed Loop
+
+The generic local verification loop looks like this:
+
+```mermaid
+sequenceDiagram
+  participant O as Orchestrator
+  participant M as Dev Triangle MCP
+  participant V as Local Verifier
+  participant R as Report-only MCP
+  participant S as Ledger and Mailbox
+
+  O->>M: create local verification handoff
+  M->>S: write handoff and ledger entry
+  O->>M: run handoff and wait for result
+  M->>V: launch verifier with narrow prompt
+  V->>R: submit completion report
+  R->>S: write result and update status
+  M->>S: read completed result
+  M->>O: return status and report content
+```
+
+The current Antigravity implementation maps to that loop:
 
 ```mermaid
 sequenceDiagram
@@ -110,7 +168,29 @@ DEV_TRIANGLE_RESULT_READY
 
 If that marker is missing, Codex should not treat the handoff as fully ready.
 
-## Jules Loop
+## Cloud Worker Loop
+
+The generic cloud worker loop looks like this:
+
+```mermaid
+sequenceDiagram
+  participant O as Orchestrator
+  participant M as Dev Triangle MCP
+  participant W as Cloud Code Worker
+  participant S as Ledger
+
+  O->>M: find connected source
+  O->>M: create bounded coding task
+  M->>W: create worker session
+  M->>S: record job
+  O->>M: inspect plan and progress
+  O->>M: approve or revise plan
+  O->>M: get outputs
+  M->>S: update job status
+  O->>O: review patch, PR, or artifact
+```
+
+The current Jules implementation maps to that loop:
 
 ```mermaid
 sequenceDiagram

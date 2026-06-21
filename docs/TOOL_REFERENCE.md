@@ -4,6 +4,42 @@ This document explains the MCP tools in human language. It is not a replacement
 for the JSON schemas in the source code, but it should help users understand
 which tool exists for which job.
 
+## Role-Based View
+
+The architecture is role-based:
+
+```text
+Orchestrator -> Dev Triangle MCP -> Worker / Verifier -> Reporter
+```
+
+The current tool names are concrete because the current implemented providers
+are concrete:
+
+```text
+jules_*        -> current cloud code worker tools
+antigravity_*  -> current local verifier tools
+job_*          -> shared ledger tools
+```
+
+Future provider work may add generic provider internals, but these public names
+should remain stable compatibility wrappers for the current default profile.
+
+```mermaid
+flowchart LR
+  O["Orchestrator"]:::orchestrator --> M["dev_triangle MCP"]:::mcp
+  M --> JT["jules_* tools<br/>cloud code worker"]:::worker
+  M --> AT["antigravity_* tools<br/>local verifier"]:::verifier
+  M --> LT["job_* tools<br/>ledger"]:::state
+  AT --> RT["dev-triangle-report tools<br/>worker completion"]:::report
+
+  classDef orchestrator fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px;
+  classDef mcp fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:2px;
+  classDef worker fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:2px;
+  classDef verifier fill:#ffedd5,stroke:#ea580c,color:#431407,stroke-width:2px;
+  classDef report fill:#fce7f3,stroke:#db2777,color:#500724,stroke-width:2px;
+  classDef state fill:#fef9c3,stroke:#ca8a04,color:#422006,stroke-width:2px;
+```
+
 ## Main Server: `dev_triangle`
 
 File:

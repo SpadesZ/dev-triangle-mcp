@@ -1,13 +1,36 @@
 # Provider Model
 
-Dev Triangle MCP currently ships with one stable runtime stack:
+Dev Triangle MCP is designed around provider roles, but it currently ships with
+one stable runtime profile:
 
 ```text
 Codex -> Dev Triangle MCP -> Jules -> Antigravity
 ```
 
-This document explains how the same shape could support other tools later. This
-is a design document, not a promise that all profiles are implemented today.
+This document explains how the same role shape could support other tools later.
+It is a design document, not a promise that all profiles are implemented today.
+
+## Provider Slot Diagram
+
+```mermaid
+flowchart LR
+  P["Provider Profile"]:::profile --> O["orchestrator<br/>required"]:::orchestrator
+  P --> W["cloud_code_worker<br/>optional"]:::worker
+  P --> V["local_verifier<br/>optional"]:::verifier
+  P --> R["reporter<br/>required for workers"]:::report
+  O --> M["dev_triangle MCP<br/>full control plane"]:::mcp
+  W --> R
+  V --> R
+  R --> S[("ledger + result mailbox")]:::state
+
+  classDef profile fill:#f8fafc,stroke:#475569,color:#0f172a,stroke-width:2px;
+  classDef orchestrator fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px;
+  classDef mcp fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:2px;
+  classDef worker fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:2px;
+  classDef verifier fill:#ffedd5,stroke:#ea580c,color:#431407,stroke-width:2px;
+  classDef report fill:#fce7f3,stroke:#db2777,color:#500724,stroke-width:2px;
+  classDef state fill:#fef9c3,stroke:#ca8a04,color:#422006,stroke-width:2px;
+```
 
 ## Current Stable Profile
 
@@ -22,9 +45,27 @@ reporter: dev-triangle-report MCP
 
 This is the profile local productization is built around.
 
+## Implementation Status
+
+| Profile | Status | Notes |
+| --- | --- | --- |
+| `codex-jules-antigravity` | Implemented and validated | Current default |
+| `claude-jules-antigravity` | Design example | Needs orchestrator config docs and validation |
+| `codex-gemini-antigravity` | Design example | Needs Gemini worker adapter |
+| `claude-gemini-antigravity` | Design example | Needs both orchestrator docs and worker adapter |
+
+The project should not advertise a profile as stable until it has:
+
+- Configuration examples.
+- Provider detection.
+- Task creation or handoff support.
+- Result collection.
+- Protocol smoke tests.
+- A real local or cloud validation path, not only mocks.
+
 ## Why Providers Matter
 
-Users may want to swap roles:
+Users may want to swap role providers:
 
 - Claude as the orchestrator.
 - Gemini CLI as the code worker.
@@ -147,6 +188,20 @@ orchestrator -> full dev_triangle MCP
 worker       -> task prompt + report-only MCP
 verifier     -> handoff + report-only MCP
 ```
+
+## Compatibility Wrappers
+
+The current MCP tools are intentionally concrete:
+
+```text
+jules_*
+antigravity_*
+dev_triangle_report_*
+```
+
+They are honest compatibility wrappers for the providers that are actually
+implemented today. A future provider registry can add generic internals without
+breaking these public names.
 
 ## Future Provider Registry
 

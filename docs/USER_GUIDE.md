@@ -5,7 +5,8 @@ read the source code.
 
 ## The Short Version
 
-Dev Triangle MCP lets one main AI agent coordinate other AI coding agents.
+Dev Triangle MCP lets one main AI agent coordinate other AI coding agents
+through stable roles.
 
 The default setup is:
 
@@ -16,6 +17,16 @@ Dev Triangle MCP can send work to Jules.
 Dev Triangle MCP can send local validation to Antigravity.
 Workers report back through a controlled result channel.
 Codex gives you the final answer.
+```
+
+The role-based setup is:
+
+```text
+You talk to the orchestrator.
+The orchestrator talks to Dev Triangle MCP.
+Dev Triangle MCP routes work to a worker or verifier.
+The worker reports back through a narrow return channel.
+The orchestrator reviews the result and answers you.
 ```
 
 The useful part is not merely launching tools. The useful part is that every
@@ -42,7 +53,31 @@ Dev Triangle MCP turns that into a trackable loop:
 4. Codex reads the result from the ledger.
 5. Codex decides the next step.
 
-## The Three Jobs
+## The Role Model
+
+```mermaid
+flowchart LR
+  U(["User"]):::human --> O["Orchestrator<br/>understands and reviews"]:::orchestrator
+  O --> M["Dev Triangle MCP<br/>routes and records"]:::mcp
+  M --> W["Worker<br/>code output"]:::worker
+  M --> V["Verifier<br/>local validation"]:::verifier
+  W --> O
+  V --> R["Reporter<br/>final result only"]:::report
+  R --> S[("Ledger + result mailbox")]:::state
+  S --> O
+
+  classDef human fill:#f8fafc,stroke:#475569,color:#0f172a,stroke-width:1px;
+  classDef orchestrator fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px;
+  classDef mcp fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:2px;
+  classDef worker fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:2px;
+  classDef verifier fill:#ffedd5,stroke:#ea580c,color:#431407,stroke-width:2px;
+  classDef report fill:#fce7f3,stroke:#db2777,color:#500724,stroke-width:2px;
+  classDef state fill:#fef9c3,stroke:#ca8a04,color:#422006,stroke-width:2px;
+```
+
+See [Role Model](ROLE_MODEL.md) for the tool-agnostic contract.
+
+## The Default Jobs
 
 ### Codex: Orchestrator
 

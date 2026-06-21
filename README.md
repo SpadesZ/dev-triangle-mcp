@@ -1,26 +1,40 @@
 # Dev Triangle MCP
 
-Dev Triangle MCP is a local MCP workflow control plane for people who want
-Codex, Jules, and Antigravity to work together without losing track of who is
-doing what.
+Dev Triangle MCP is a local MCP workflow control plane for coordinating an AI
+orchestrator, one or more coding workers, local verification, and a controlled
+result channel.
 
 In plain English:
 
-- **Codex** is the orchestrator. It talks to the user, decides the route, checks
-  the work, and gives the final answer.
-- **Jules** is the cloud coding worker. It is useful for larger code changes,
-  repetitive edits, dependency upgrades, test expansion, and PR-oriented work.
-- **Antigravity** is the local verifier. It is useful for local files, local
-  commands, Docker, IDE context, and machine-specific validation.
+- The **orchestrator** talks to the user, decides the route, checks the work,
+  and gives the final answer.
+- A **cloud code worker** handles larger code changes, repetitive edits,
+  dependency upgrades, test expansion, and PR-oriented work.
+- A **local verifier** checks local files, local commands, Docker, IDE context,
+  and machine-specific behavior.
+- A **report-only channel** lets workers submit final results without receiving
+  the full control plane.
 - **Dev Triangle MCP** is the handoff desk, job ledger, and result mailbox that
-  lets those agents form a closed loop.
+  lets those roles form a closed loop.
 
 The goal is simple: make multi-agent development feel like one coordinated
 workflow instead of three disconnected chats.
 
+The current validated default profile is concrete:
+
+```text
+Orchestrator     = Codex
+Cloud code worker = Jules
+Local verifier   = Antigravity through agy
+Reporter         = dev-triangle-report MCP
+```
+
+So the architecture is role-based, while today's tested implementation uses
+Codex, Jules, and Antigravity.
+
 ## Status
 
-Current stable profile:
+Current stable default profile:
 
 ```text
 Codex -> Dev Triangle MCP -> Jules -> Antigravity
@@ -54,35 +68,63 @@ AI agents work separately, the user becomes the project manager and has to copy
 tasks, paste results, remember statuses, and check whether a worker actually
 finished.
 
-Dev Triangle MCP gives the workflow a shared shape:
+Dev Triangle MCP gives the workflow a shared shape. The first diagram is the
+role model, not a tool lock-in:
 
 ```mermaid
-flowchart TD
-  U["User"] --> C["Codex"]
-  C --> M["Dev Triangle MCP"]
-  M --> J["Jules: cloud coding worker"]
-  J --> O["Patch, PR, or outputs"]
-  O --> C
-  C --> H["Antigravity handoff"]
-  H --> A["Antigravity CLI: agy --print"]
-  A --> R["Report-only MCP"]
-  R --> L["Local ledger + result markdown"]
+flowchart LR
+  U(["User"]):::human --> O["Orchestrator<br/>plan, route, review"]:::orchestrator
+  O --> M["Dev Triangle MCP<br/>control plane + ledger"]:::mcp
+  M --> W["Cloud Code Worker<br/>patch, PR, code output"]:::worker
+  M --> V["Local Verifier<br/>local checks + environment"]:::verifier
+  W --> O
+  V --> R["Report-only MCP<br/>narrow return channel"]:::report
+  R --> S[("Ledger + Result Mailbox")]:::state
+  S --> O
+  O --> F(["Final answer"]):::human
+
+  classDef human fill:#f8fafc,stroke:#475569,color:#0f172a,stroke-width:1px;
+  classDef orchestrator fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px;
+  classDef mcp fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:2px;
+  classDef worker fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:2px;
+  classDef verifier fill:#ffedd5,stroke:#ea580c,color:#431407,stroke-width:2px;
+  classDef report fill:#fce7f3,stroke:#db2777,color:#500724,stroke-width:2px;
+  classDef state fill:#fef9c3,stroke:#ca8a04,color:#422006,stroke-width:2px;
+```
+
+The current default implementation maps those roles like this:
+
+```mermaid
+flowchart LR
+  C["Codex<br/>orchestrator"]:::orchestrator --> M["Dev Triangle MCP"]:::mcp
+  M --> J["Jules<br/>cloud code worker"]:::worker
+  M --> A["Antigravity agy<br/>local verifier"]:::verifier
+  J --> C
+  A --> R["dev-triangle-report<br/>report-only MCP"]:::report
+  R --> L[("jobs.json<br/>result markdown")]:::state
   L --> C
-  C --> F["Final answer to user"]
+
+  classDef orchestrator fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px;
+  classDef mcp fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:2px;
+  classDef worker fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:2px;
+  classDef verifier fill:#ffedd5,stroke:#ea580c,color:#431407,stroke-width:2px;
+  classDef report fill:#fce7f3,stroke:#db2777,color:#500724,stroke-width:2px;
+  classDef state fill:#fef9c3,stroke:#ca8a04,color:#422006,stroke-width:2px;
 ```
 
 The important idea is the **closed loop**:
 
-1. Codex creates a task or handoff through MCP.
+1. The orchestrator creates a task or handoff through MCP.
 2. The worker does the job.
 3. The worker writes a result through a controlled return channel.
-4. Codex reads the result from the ledger.
-5. Codex decides whether the work is accepted, needs another pass, or should be
-   escalated to the user.
+4. The orchestrator reads the result from the ledger.
+5. The orchestrator decides whether the work is accepted, needs another pass, or
+   should be escalated to the user.
 
 ## Mental Model
 
-Think of the system as a small development team:
+Think of the system as a small development team. The role is the stable concept;
+the default tool is the current implementation.
 
 | Role | Default tool | Job | Should see full MCP server? |
 | --- | --- | --- | --- |
@@ -274,6 +316,8 @@ For the full list, see [Tool Reference](docs/TOOL_REFERENCE.md).
 Start here:
 
 - [User Guide](docs/USER_GUIDE.md) - the long plain-language explanation.
+- [Role Model](docs/ROLE_MODEL.md) - the tool-agnostic contract behind the
+  workflow.
 - [New Project Workflow](docs/NEW_PROJECT_WORKFLOW.md) - how to use this on a
   fresh project.
 - [Architecture](docs/ARCHITECTURE.md) - how the pieces connect.
@@ -289,8 +333,7 @@ Start here:
 
 ## Safety Rules
 
-- Keep Codex as the orchestrator unless you intentionally configure another
-  orchestrator.
+- Keep one clear orchestrator. The current default is Codex.
 - Give the full `dev_triangle` MCP server only to the orchestrator.
 - Give worker agents the report-only MCP server.
 - Do not expose a generic shell executor over MCP.
