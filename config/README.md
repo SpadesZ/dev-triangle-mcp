@@ -1,15 +1,16 @@
 # Config Examples
 
-This folder contains copyable examples, not machine-specific live config.
+This folder contains copyable examples. They are not machine-specific live
+config.
 
-Use:
+Most users should run:
 
 ```powershell
 .\scripts\install-local.ps1
 ```
 
-to write local Codex and Antigravity/Gemini config files with the correct paths
-for your machine.
+The installer writes the correct absolute paths for your machine and backs up
+existing config files before changing them.
 
 ## Files
 
@@ -24,7 +25,7 @@ providers.example.json
   Future provider profile examples. This does not change runtime behavior yet.
 ```
 
-## Important Split
+## The Important Split
 
 Codex should see:
 
@@ -32,11 +33,46 @@ Codex should see:
 dev_triangle -> server.py
 ```
 
-Antigravity should see:
+Antigravity and Gemini-side worker config should see:
 
 ```text
 dev-triangle-report -> antigravity_report_server.py
 ```
 
+Reason:
+
+```text
+Codex orchestrates the whole workflow.
+Workers only need to submit final results.
+```
+
 Do not attach the full `dev_triangle` server to worker/verifier agents unless
 you intentionally want them to have orchestration permissions.
+
+## Secrets
+
+Do not put real API keys in these example files.
+
+For Jules, set:
+
+```powershell
+$env:JULES_API_KEY = "your key"
+```
+
+The installer allows Codex to inherit the environment variable, but it does not
+write the key to disk.
+
+## When To Edit Manually
+
+Manual edits are useful when:
+
+- Your repo is not in the default location.
+- You want a custom Python path.
+- You want a custom `agy` path.
+- You are testing a future provider profile.
+
+After manual edits, run:
+
+```powershell
+.\scripts\doctor.ps1
+```
