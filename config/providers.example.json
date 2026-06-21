@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "activeProfile": "codex-jules-antigravity",
+  "profiles": {
+    "codex-jules-antigravity": {
+      "description": "Current stable default. Codex orchestrates, Jules handles cloud coding work, and Antigravity validates locally through agy.",
+      "orchestrator": {
+        "provider": "codex"
+      },
+      "workers": {
+        "cloud_code": {
+          "provider": "jules",
+          "requiresEnv": ["JULES_API_KEY"]
+        },
+        "local_verify": {
+          "provider": "antigravity",
+          "command": "agy",
+          "reportServer": "dev-triangle-report"
+        }
+      }
+    },
+    "claude-gemini-antigravity": {
+      "description": "Future example. Claude orchestrates, Gemini CLI performs code work, and Antigravity validates locally.",
+      "orchestrator": {
+        "provider": "claude"
+      },
+      "workers": {
+        "code": {
+          "provider": "gemini_cli",
+          "command": "gemini",
+          "reportServer": "dev-triangle-report"
+        },
+        "local_verify": {
+          "provider": "antigravity",
+          "command": "agy",
+          "reportServer": "dev-triangle-report"
+        }
+      }
+    }
+  }
+}

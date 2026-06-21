@@ -18,6 +18,9 @@ Antigravity
   Handles local validation through agy CLI and reports back through a tiny report-only MCP server.
 ```
 
+See [PROVIDERS.md](PROVIDERS.md) for planned provider abstraction. The current
+runtime still defaults to Codex + Jules + Antigravity.
+
 ## Why Two MCP Servers?
 
 Codex gets the full `dev_triangle` server because it is the orchestrator.

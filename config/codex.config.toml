@@ -1,3 +1,7 @@
+# Example Codex MCP configuration.
+#
+# Replace C:\path\to\dev-triangle-mcp with your local clone path, or run
+# scripts/install-local.ps1 to write a machine-specific config automatically.
 [mcp_servers.dev_triangle]
 command = "python"
 args = ["C:\\path\\to\\dev-triangle-mcp\\server.py"]

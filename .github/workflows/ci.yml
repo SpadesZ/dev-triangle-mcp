@@ -1,3 +1,6 @@
+# CI keeps the public repo honest without requiring Jules or Antigravity auth.
+# The tests use deterministic fake/local paths and validate the MCP protocol
+# surface on both Linux and Windows.
 name: CI
 
 on:

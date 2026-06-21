@@ -1,3 +1,19 @@
+"""Report-only MCP server for worker/verifier agents.
+
+This server is intentionally tiny. Antigravity and future worker agents should
+use this surface to report completion without receiving the full Dev Triangle
+control plane.
+
+Human orientation:
+  The main server (server.py) creates handoffs and launches workers.
+  This server only accepts final reports and writes them into the shared local
+  ledger/result mailbox.
+
+Why this exists:
+  A worker that only needs to say "I finished, here are the results" should not
+  see Jules tools, job mutation tools, or other orchestration features.
+"""
+
 from __future__ import annotations
 
 import json
@@ -54,6 +70,8 @@ def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
+    # NOTE: Use a temp file followed by replace so the shared ledger is not left
+    # as truncated JSON if this process is interrupted mid-write.
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
@@ -120,6 +138,9 @@ def normalize_path(path: str) -> str:
 
 
 def find_handoff_by_id_or_path(handoff_ref: str) -> dict[str, Any]:
+    # Workers may receive either the stable handoff id or the markdown path.
+    # Supporting both makes prompts less brittle while still requiring a ledger
+    # entry before a result can be accepted.
     ledger = load_ledger()
     handoffs = ledger.get("handoffs", [])
     for handoff in handoffs:
@@ -145,6 +166,8 @@ def find_handoff_by_id_or_path(handoff_ref: str) -> dict[str, Any]:
 
 
 def resolve_result_path(value: str | None, handoff: dict[str, Any]) -> Path:
+    # Result paths are restricted to known handoff/result directories. This
+    # prevents a worker from using the reporting tool to write arbitrary files.
     if value:
         path = Path(value).expanduser()
         if not path.is_absolute():
@@ -190,6 +213,8 @@ def tool_dev_triangle_report_health(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def tool_complete_dev_triangle_handoff(args: dict[str, Any]) -> dict[str, Any]:
+    # This is the preferred closed-loop return path. It writes both the human
+    # readable markdown report and the machine-readable ledger update.
     ensure_dirs()
     handoff_ref = require_string(args, "handoff", 2000)
     status = optional_string(args, "status", 100) or "COMPLETED"
@@ -251,6 +276,8 @@ def tool_complete_dev_triangle_handoff(args: dict[str, Any]) -> dict[str, Any]:
 
 
 TOOLS = [
+    # Keep this list deliberately small. The report server is meant to be safe
+    # to expose to worker agents that should not orchestrate other tools.
     {
         "name": "dev_triangle_report_health",
         "description": "Check the tiny report-only MCP server used by Antigravity CLI to submit handoff results.",
@@ -311,6 +338,8 @@ def jsonrpc_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
 
 
 def handle_message(message: dict[str, Any]) -> dict[str, Any] | None:
+    # Same dependency-free stdio JSON-RPC shape as the main server, but with only
+    # report submission tools registered.
     method = message.get("method")
     request_id = message.get("id")
     params = message.get("params") or {}
@@ -371,7 +400,16 @@ def write_response(response: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
+def configure_stdio() -> None:
+    # Keep stdio MCP JSON consistently UTF-8 across Windows shells and CI.
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> int:
+    configure_stdio()
     ensure_dirs()
     for line in sys.stdin:
         line = line.strip()

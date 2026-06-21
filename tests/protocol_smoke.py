@@ -1,3 +1,18 @@
+"""Smoke test for the main Dev Triangle MCP server.
+
+The test runs the server as a real stdio MCP process and exercises the important
+control-plane paths:
+
+- JSON-RPC initialization and tool listing.
+- Jules-independent ledger operations.
+- Antigravity handoff creation.
+- CLI detection and dry-run behavior.
+- Closed-loop result capture using a fake Antigravity executable.
+
+The fake executable is used only for deterministic protocol testing. Real local
+validation is covered by scripts/demo-user-flow.ps1 on machines with agy.
+"""
+
 from __future__ import annotations
 
 import json
@@ -10,7 +25,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "server.py"
-TEST_STATE = ROOT / ".dev-triangle-test"
+# Keep each smoke run isolated. Local developers may run scripts/smoke.ps1 while
+# also invoking this test directly, and shared ledgers make those runs flaky.
+TEST_STATE = Path(os.environ.get("DEV_TRIANGLE_TEST_HOME", str(ROOT / ".dev-triangle-test" / str(os.getpid()))))
 
 
 def rpc(proc: subprocess.Popen[str], request: dict) -> dict:
@@ -25,6 +42,8 @@ def rpc(proc: subprocess.Popen[str], request: dict) -> dict:
 
 
 def create_fake_antigravity() -> Path:
+    # NOTE: This fake executable proves the mailbox contract without depending
+    # on external auth, network, or the real Antigravity model runtime.
     TEST_STATE.mkdir(parents=True, exist_ok=True)
     fake_py = TEST_STATE / "fake_antigravity.py"
     fake_py.write_text(

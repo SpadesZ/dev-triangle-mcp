@@ -1,3 +1,18 @@
+<#
+.SYNOPSIS
+Installs or refreshes Dev Triangle MCP on a local Windows machine.
+
+.DESCRIPTION
+This script writes the local MCP configuration needed by Codex and
+Antigravity/Gemini. It keeps the full control-plane server attached to Codex and
+the tiny report-only server attached to Antigravity. Existing config files are
+backed up before modification.
+
+Human note:
+  The installer intentionally does not store JULES_API_KEY. Secrets should be
+  provided through the shell environment or a real secret manager.
+#>
+
 param(
   [string]$ToolRoot = (Split-Path -Parent (Split-Path -Parent $PSCommandPath)),
   [string]$StateRoot = (Join-Path $HOME ".dev-triangle"),
@@ -8,6 +23,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Resolve-PythonPath {
+  # Prefer Codex's bundled Python when present because it makes the install less
+  # dependent on the user's system Python PATH.
   param([string]$Requested)
   if ($Requested) { return $Requested }
   if ($env:DEV_TRIANGLE_PYTHON -and (Test-Path -LiteralPath $env:DEV_TRIANGLE_PYTHON)) {
@@ -21,6 +38,8 @@ function Resolve-PythonPath {
 }
 
 function Resolve-AgyPath {
+  # agy is the stable unattended Antigravity path. Falling back to "agy" lets a
+  # user rely on PATH if they installed it in a custom location.
   param([string]$Requested)
   if ($Requested) { return $Requested }
   if ($env:ANTIGRAVITY_COMMAND -and (Test-Path -LiteralPath $env:ANTIGRAVITY_COMMAND)) {
@@ -57,6 +76,8 @@ function Set-CodexDevTriangleBlock {
   $out = New-Object System.Collections.Generic.List[string]
   $skip = $false
 
+  # NOTE: This removes only the existing dev_triangle block and its env block.
+  # Other MCP servers in the user's Codex config are preserved as-is.
   foreach ($line in $lines) {
     if ($line -eq "[mcp_servers.dev_triangle]") {
       $skip = $true
@@ -117,6 +138,8 @@ function Upsert-GeminiConfig {
   if (-not ($json.PSObject.Properties.Name -contains "mcpServers") -or $null -eq $json.mcpServers) {
     Set-JsonProperty -Object $json -Name "mcpServers" -Value ([pscustomobject]@{})
   }
+  # Antigravity should only see the report surface. If an earlier install added
+  # the full dev-triangle server, remove it here to keep the worker role narrow.
   Remove-JsonPropertyIfPresent -Object $json.mcpServers -Name "dev-triangle"
   Set-JsonProperty -Object $json.mcpServers -Name "dev-triangle-report" -Value $ServerConfig
   Write-JsonFile -Path $Path -Object $json
@@ -128,6 +151,8 @@ function Upsert-IdeConfig {
   if (-not ($json.PSObject.Properties.Name -contains "servers") -or $null -eq $json.servers) {
     Set-JsonProperty -Object $json -Name "servers" -Value ([pscustomobject]@{})
   }
+  # Same split as Gemini CLI config: IDE-side Antigravity gets reporting tools,
+  # not the full orchestrator control plane.
   Remove-JsonPropertyIfPresent -Object $json.servers -Name "dev-triangle"
   Set-JsonProperty -Object $json.servers -Name "dev-triangle-report" -Value $ServerConfig
   Write-JsonFile -Path $Path -Object $json

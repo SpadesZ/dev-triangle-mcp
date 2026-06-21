@@ -1,3 +1,17 @@
+<#
+.SYNOPSIS
+Runs a real user-facing Dev Triangle MCP demo flow.
+
+.DESCRIPTION
+The script creates a tiny local Python project, creates an Antigravity handoff
+through the main MCP server, runs the real agy CLI, waits for the report-only
+MCP server to submit a result, and writes a JSON demo report.
+
+Human note:
+  This is the closest automated check to "what would a user experience?" It is
+  intentionally separate from CI because it needs a locally authenticated agy.
+#>
+
 param(
   [string]$ToolRoot = (Split-Path -Parent (Split-Path -Parent $PSCommandPath)),
   [string]$StateRoot = (Join-Path $HOME ".dev-triangle"),
@@ -6,18 +20,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Invoke-Mcp {
-  param(
-    [string]$ServerPath,
-    [array]$Messages,
-    [int]$TimeoutSec = 60
-  )
-  $inputText = ($Messages | ForEach-Object { $_ | ConvertTo-Json -Depth 20 -Compress }) -join "`n"
-  $inputText += "`n"
-  $proc = Start-Process -FilePath $script:Python -ArgumentList @("`"$ServerPath`"") -WorkingDirectory $script:ToolRoot -NoNewWindow -Wait -PassThru -RedirectStandardInput "$env:TEMP\dev-triangle-mcp-in.jsonl" -RedirectStandardOutput "$env:TEMP\dev-triangle-mcp-out.jsonl" -RedirectStandardError "$env:TEMP\dev-triangle-mcp-err.txt"
-}
-
 function Invoke-McpServer {
+  # JSON-RPC over stdio is line based. Write each request as one compact JSON
+  # line, then parse each response line back into PowerShell objects.
   param(
     [string]$ServerPath,
     [array]$Messages,
@@ -50,6 +55,9 @@ $env:DEV_TRIANGLE_HOME = $StateRoot
 $env:ANTIGRAVITY_HANDOFF_DIR = Join-Path $StateRoot "antigravity-handoffs"
 $env:ANTIGRAVITY_AGY_PRINT_TIMEOUT = "$($TimeoutSec)s"
 
+# The generated project is deliberately tiny. The goal is not app complexity;
+# it is proving that a fresh user project can make the full MCP -> agy ->
+# report-only MCP loop complete.
 $DemoRoot = Join-Path $ToolRoot "demo-output\user-demo-project"
 $ReportDir = Join-Path $ToolRoot "demo-output"
 New-Item -ItemType Directory -Force -Path $DemoRoot, $ReportDir | Out-Null

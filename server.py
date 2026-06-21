@@ -1,3 +1,24 @@
+"""Dev Triangle MCP main server.
+
+This process is the full control-plane MCP server intended for the
+orchestrator agent, currently Codex by default. It exposes tools for:
+
+- Jules cloud coding sessions.
+- Antigravity local validation handoffs.
+- The local job ledger used to connect task creation, execution, and results.
+
+Human orientation:
+  Codex should see this full server because it owns task routing and review.
+  Worker/verifier agents should not see this server by default. They should
+  receive a narrow prompt plus the report-only server in
+  antigravity_report_server.py.
+
+Safety shape:
+  This file intentionally does not expose a generic shell execution tool.
+  Antigravity execution is restricted to explicit CLI handoff commands, and
+  Jules access is restricted to the Jules REST API adapter.
+"""
+
 from __future__ import annotations
 
 import json
@@ -18,6 +39,9 @@ SERVER_NAME = "dev-triangle-mcp"
 SERVER_VERSION = "0.1.0"
 PROTOCOL_VERSION = "2025-06-18"
 
+# Runtime state is deliberately separate from source code. For local installs
+# this normally points at %USERPROFILE%\.dev-triangle; tests override it with a
+# temporary folder so smoke tests cannot mutate the user's real ledger.
 ROOT = Path(__file__).resolve().parent
 DEV_TRIANGLE_HOME = Path(
     os.environ.get("DEV_TRIANGLE_HOME", str(ROOT / ".dev-triangle"))
@@ -55,6 +79,9 @@ def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
+    # NOTE: Ledger writes are atomic enough for this local single-user tool:
+    # write a sibling temp file, then replace the target in one filesystem move.
+    # This avoids half-written JSON if a process exits during serialization.
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
@@ -252,6 +279,9 @@ def http_json(method: str, path: str, body: dict[str, Any] | None = None, params
 
 
 def upsert_job(job: dict[str, Any]) -> dict[str, Any]:
+    # Jules and future providers may report different stable identifiers. Keep
+    # local IDs stable when possible by matching either the local id or the
+    # provider's external session name.
     ledger = load_ledger()
     jobs = ledger["jobs"]
     existing = None
@@ -310,6 +340,8 @@ def update_job_by_session(session: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def tool_jules_list_sources(args: dict[str, Any]) -> dict[str, Any]:
+    # Jules tools are thin REST wrappers plus local ledger bookkeeping. They do
+    # not run local code; local verification is delegated to Antigravity.
     params = {
         "pageSize": optional_int(args, "pageSize", 30, 1, 100),
         "pageToken": optional_string(args, "pageToken", 2000),
@@ -637,6 +669,9 @@ def build_antigravity_command_line(
     window_mode: str,
     execution_style: str,
 ) -> tuple[list[str], str]:
+    # NOTE: agy_print is the preferred unattended path. The older
+    # antigravity-ide.cmd chat route can launch a UI but did not reliably return
+    # a completed agent result in local testing.
     kind = antigravity_command_kind(command)
     style = execution_style
     if style == "auto":
@@ -683,6 +718,8 @@ def build_antigravity_command_line(
 
 
 def antigravity_subprocess_env(command: str) -> dict[str, str]:
+    # agy may need GNU grep on Windows for its internal search steps. Git for
+    # Windows commonly provides it, so we prepend that location when present.
     env = os.environ.copy()
     extra_paths: list[str] = []
     command_parent = str(Path(command).expanduser().parent)
@@ -701,6 +738,12 @@ def antigravity_subprocess_env(command: str) -> dict[str, str]:
 
 
 def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
+    # This is the local validation bridge:
+    # 1. Find a prepared handoff markdown file.
+    # 2. Launch a known Antigravity CLI command.
+    # 3. Wait for either report-only MCP submission or mailbox marker output.
+    #
+    # It is intentionally not a general shell runner.
     handoff_ref = require_string(args, "handoff", 2000)
     command = optional_string(args, "command", 2000)
     repo_path_override = optional_string(args, "repoPath", 2000)
@@ -915,6 +958,9 @@ def tool_antigravity_get_result(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def tool_submit_antigravity_result(args: dict[str, Any]) -> dict[str, Any]:
+    # Compatibility result path for agents that can see the full main server.
+    # The safer default for Antigravity is complete_dev_triangle_handoff in the
+    # report-only server, because that exposes only the minimum return channel.
     handoff_ref = require_string(args, "handoff", 2000)
     status = optional_string(args, "status", 100) or "COMPLETED"
     recommendation = optional_string(args, "recommendation", 2000) or ""
@@ -1056,6 +1102,9 @@ def schema(properties: dict[str, Any], required: list[str] | None = None) -> dic
 
 
 TOOLS = [
+    # The MCP schema is intentionally explicit and conservative. Every tool has
+    # a narrow input shape so clients can render safe UI and agents get fewer
+    # opportunities to invent unsupported arguments.
     {
         "name": "jules_list_sources",
         "title": "List Jules Sources",
@@ -1312,6 +1361,9 @@ def jsonrpc_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
 
 
 def handle_message(message: dict[str, Any]) -> dict[str, Any] | None:
+    # Minimal JSON-RPC dispatcher for stdio MCP clients. Keeping this local and
+    # dependency-free makes the server easy to install in Codex, Claude Desktop,
+    # Gemini CLI, or any other MCP-capable client.
     method = message.get("method")
     request_id = message.get("id")
     params = message.get("params") or {}
@@ -1376,7 +1428,18 @@ def write_response(response: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
+def configure_stdio() -> None:
+    # MCP stdio payloads are JSON and should be UTF-8. On Windows, Python can
+    # otherwise inherit a legacy codepage for piped stdout, which makes clients
+    # that correctly read UTF-8 fail on non-ASCII diagnostic text.
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> int:
+    configure_stdio()
     ensure_dirs()
     for raw_line in sys.stdin:
         line = raw_line.strip()

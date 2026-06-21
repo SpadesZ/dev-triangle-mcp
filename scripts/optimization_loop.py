@@ -1,3 +1,13 @@
+"""Repeated local verification loop for Dev Triangle MCP.
+
+This script is not an optimizer in the machine-learning sense. It is an
+operator confidence loop: run compile checks, protocol smoke tests, and health
+checks repeatedly while recording candidate improvement notes.
+
+Use it when changing the MCP server surface or install behavior and you want a
+quick regression history in the state directory.
+"""
+
 from __future__ import annotations
 
 import json

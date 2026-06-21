@@ -1,3 +1,13 @@
+"""Smoke test for the report-only MCP server.
+
+This verifies the narrow worker-facing surface:
+
+- Only health and completion tools are exposed.
+- A known handoff can be marked completed.
+- The result markdown includes DEV_TRIANGLE_RESULT_READY.
+- The shared ledger is updated.
+"""
+
 from __future__ import annotations
 
 import json
@@ -9,7 +19,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "antigravity_report_server.py"
-TEST_STATE = ROOT / ".dev-triangle-report-test"
+# Use a per-process state folder so this smoke test can run beside other local
+# checks without fighting over jobs.json.
+TEST_STATE = Path(
+    os.environ.get("DEV_TRIANGLE_REPORT_TEST_HOME", str(ROOT / ".dev-triangle-report-test" / str(os.getpid())))
+)
 
 
 def rpc(proc: subprocess.Popen[str], request: dict) -> dict:
@@ -24,6 +38,8 @@ def rpc(proc: subprocess.Popen[str], request: dict) -> dict:
 
 
 def main() -> int:
+    # Build a small ledger fixture by hand so this test stays independent from
+    # the main MCP server and proves the report server can stand alone.
     TEST_STATE.mkdir(parents=True, exist_ok=True)
     handoff_dir = TEST_STATE / "antigravity-handoffs"
     result_dir = TEST_STATE / "antigravity-results"

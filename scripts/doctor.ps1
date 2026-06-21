@@ -1,3 +1,13 @@
+<#
+.SYNOPSIS
+Checks whether the local Dev Triangle MCP install is healthy.
+
+.DESCRIPTION
+The doctor verifies file locations, Python, agy, Codex config, and
+Antigravity/Gemini MCP config. It is intentionally read-only so it can be run
+before and after install changes.
+#>
+
 param(
   [string]$ToolRoot = (Split-Path -Parent (Split-Path -Parent $PSCommandPath)),
   [string]$StateRoot = (Join-Path $HOME ".dev-triangle"),
@@ -20,6 +30,8 @@ function Test-JsonConfig {
 }
 
 function Run-Command {
+  # Run native commands through Start-Process so stdout/stderr can be captured
+  # consistently even when a tool writes version information to stderr.
   param([string]$FilePath, [string[]]$Arguments)
   try {
     $outPath = Join-Path $env:TEMP ("dev-triangle-doctor-out-" + [guid]::NewGuid().ToString("N") + ".txt")

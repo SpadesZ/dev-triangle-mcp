@@ -9,6 +9,22 @@ Plainly:
 - Antigravity is the local validation agent: useful for local files, tests, Docker, IDE context, and environment checks.
 - Dev Triangle MCP is the ledger and handoff layer between them.
 
+## Current Stable Stack
+
+The current runtime defaults are intentionally conservative:
+
+```text
+Codex -> Dev Triangle MCP -> Jules -> Antigravity
+```
+
+Provider abstraction is documented but not enabled by default. See:
+
+- [Provider model](docs/PROVIDERS.md)
+- [Roadmap](ROADMAP.md)
+
+This means the public repo can discuss Claude/Gemini-style replacements without
+changing the local behavior that has already been validated.
+
 ## Local Install
 
 Default local layout:

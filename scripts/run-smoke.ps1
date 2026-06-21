@@ -1,6 +1,17 @@
+<#
+.SYNOPSIS
+Compatibility wrapper for the main protocol smoke test.
+
+.DESCRIPTION
+Kept for users who remember the original script name. New local installs should
+prefer scripts/smoke.ps1 because it also checks the report server and agy
+detection.
+#>
+
 $ErrorActionPreference = "Stop"
 
 function Invoke-Native {
+  # Keep native command failures visible to callers and CI.
   param([string]$FilePath, [string[]]$Arguments)
   & $FilePath @Arguments
   if ($LASTEXITCODE -ne 0) {

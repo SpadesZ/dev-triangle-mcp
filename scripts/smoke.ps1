@@ -1,3 +1,13 @@
+<#
+.SYNOPSIS
+Runs local smoke tests for the installed Dev Triangle MCP.
+
+.DESCRIPTION
+This script compiles the Python servers, runs the deterministic main MCP smoke
+test, then calls both the report server health tool and Antigravity CLI
+detection through real MCP stdio processes.
+#>
+
 param(
   [string]$ToolRoot = (Split-Path -Parent (Split-Path -Parent $PSCommandPath)),
   [string]$StateRoot = (Join-Path $HOME ".dev-triangle")
@@ -6,6 +16,9 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Invoke-Native {
+  # PowerShell does not throw automatically for native command failures. Check
+  # LASTEXITCODE explicitly so a failing Python smoke test cannot be reported as
+  # a pass.
   param([string]$FilePath, [string[]]$Arguments)
   & $FilePath @Arguments
   if ($LASTEXITCODE -ne 0) {
