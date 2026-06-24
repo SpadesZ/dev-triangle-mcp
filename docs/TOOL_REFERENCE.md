@@ -17,6 +17,7 @@ are concrete:
 
 ```text
 jules_*        -> current cloud code worker tools
+prepare_jules_repo -> local project publishing guard for Jules
 antigravity_*  -> current local verifier tools
 job_*          -> shared ledger tools
 ```
@@ -58,6 +59,50 @@ Do not expose this full server to normal worker agents unless you intentionally
 want them to control the whole workflow.
 
 ## Jules Tools
+
+### `prepare_jules_repo`
+
+Inspects or publishes a local project as a GitHub repository that Jules can use.
+
+Default behavior:
+
+```text
+publish = false
+```
+
+That means the tool performs a dry-run only. It reports:
+
+- Whether the folder is already a git repo.
+- Whether a GitHub remote already exists.
+- Which Jules source string would be used.
+- Which `.gitignore` safety entries would be added.
+- Whether likely secrets or risky files were found.
+
+Publishing behavior:
+
+```text
+publish = true
+confirmPublish = true
+visibility = private
+```
+
+When publishing, the tool can:
+
+- Add Dev Triangle `.gitignore` safety defaults.
+- Run `git init` if needed.
+- Create an initial commit if needed.
+- Create a private GitHub repo through `gh`.
+- Add the GitHub remote.
+- Push the selected branch.
+- Return `sources/github/owner/repo` for `jules_create_session`.
+
+Safety rules:
+
+- Publishing requires `confirmPublish=true`.
+- Public repos require `confirmPublic=true`.
+- Existing dirty repos are blocked unless `commitChanges=true`.
+- Potential secrets block publishing unless they are ignored and untracked.
+- The tool does not store `JULES_API_KEY`.
 
 ### `jules_list_sources`
 

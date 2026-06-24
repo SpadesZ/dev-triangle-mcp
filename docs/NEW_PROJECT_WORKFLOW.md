@@ -161,9 +161,32 @@ User -> Codex -> dev_triangle MCP -> Jules -> outputs/patch/PR -> Codex review
 Before creating a Jules session, Codex should check:
 
 - Is `JULES_API_KEY` available?
-- Is the repo connected to Jules?
+- Is the project already in a GitHub repo Jules can see?
 - Is the task clear enough to delegate?
 - Should plan approval be required?
+
+If the project is only a local folder, Codex should first call
+`prepare_jules_repo`.
+
+Safe repo preparation flow:
+
+```text
+prepare_jules_repo publish=false
+  -> inspect git state
+  -> scan for secrets and risky files
+  -> show planned private GitHub repo/source
+
+prepare_jules_repo publish=true confirmPublish=true
+  -> add safe .gitignore defaults
+  -> git init if needed
+  -> create initial commit if needed
+  -> create private GitHub repo if needed
+  -> push branch
+  -> return source usable by jules_create_session
+```
+
+The tool defaults to dry-run. Public repos require an extra `confirmPublic=true`
+guard.
 
 The default should be `requirePlanApproval=true` so a human or orchestrator can
 review the plan before code changes proceed.

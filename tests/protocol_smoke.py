@@ -5,6 +5,7 @@ control-plane paths:
 
 - JSON-RPC initialization and tool listing.
 - Jules-independent ledger operations.
+- Local-project-to-Jules repo preparation dry-run safety.
 - Antigravity handoff creation.
 - CLI detection and dry-run behavior.
 - Closed-loop result capture using a fake Antigravity executable.
@@ -20,6 +21,7 @@ import os
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -112,6 +114,7 @@ def main() -> int:
         tools = rpc(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         names = {tool["name"] for tool in tools["result"]["tools"]}
         assert "jules_create_session" in names
+        assert "prepare_jules_repo" in names
         assert "create_antigravity_handoff" in names
         assert "antigravity_detect_cli" in names
         assert "run_antigravity_handoff" in names
@@ -131,11 +134,50 @@ def main() -> int:
         )
         assert jobs["result"]["isError"] is False
 
-        handoff = rpc(
+        jules_project = Path(tempfile.mkdtemp(prefix="dev-triangle-jules-prep-")) / "jules-local-project"
+        jules_project.mkdir(parents=True, exist_ok=True)
+        (jules_project / "app.py").write_text("print('hello from jules prep smoke')\n", encoding="utf-8")
+        (jules_project / ".env").write_text("JULES_API_KEY=AQ.fakeSmokeSecretValue123456789\n", encoding="utf-8")
+
+        prep_dry_run = rpc(
             proc,
             {
                 "jsonrpc": "2.0",
                 "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "prepare_jules_repo",
+                    "arguments": {"repoPath": str(jules_project)},
+                },
+            },
+        )
+        assert prep_dry_run["result"]["isError"] is False
+        prep = prep_dry_run["result"]["structuredContent"]
+        assert prep["status"] == "DRY_RUN"
+        assert prep["publish"] is False
+        assert prep["safety"]["blockingFindings"]
+        assert not (jules_project / ".gitignore").exists()
+
+        prep_guard = rpc(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "prepare_jules_repo",
+                    "arguments": {"repoPath": str(jules_project), "publish": True},
+                },
+            },
+        )
+        assert prep_guard["result"]["isError"] is True
+        assert "confirmPublish=true" in prep_guard["result"]["structuredContent"]["error"]
+
+        handoff = rpc(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 6,
                 "method": "tools/call",
                 "params": {
                     "name": "create_antigravity_handoff",
@@ -154,7 +196,7 @@ def main() -> int:
             proc,
             {
                 "jsonrpc": "2.0",
-                "id": 5,
+                "id": 7,
                 "method": "tools/call",
                 "params": {
                     "name": "antigravity_detect_cli",
@@ -169,7 +211,7 @@ def main() -> int:
             proc,
             {
                 "jsonrpc": "2.0",
-                "id": 6,
+                "id": 8,
                 "method": "tools/call",
                 "params": {
                     "name": "run_antigravity_handoff",
@@ -188,7 +230,7 @@ def main() -> int:
             proc,
             {
                 "jsonrpc": "2.0",
-                "id": 7,
+                "id": 9,
                 "method": "tools/call",
                 "params": {
                     "name": "run_antigravity_handoff",
@@ -207,7 +249,7 @@ def main() -> int:
             proc,
             {
                 "jsonrpc": "2.0",
-                "id": 8,
+                "id": 10,
                 "method": "tools/call",
                 "params": {
                     "name": "run_antigravity_handoff",
@@ -231,7 +273,7 @@ def main() -> int:
             proc,
             {
                 "jsonrpc": "2.0",
-                "id": 9,
+                "id": 11,
                 "method": "tools/call",
                 "params": {
                     "name": "antigravity_get_result",
@@ -247,7 +289,7 @@ def main() -> int:
             proc,
             {
                 "jsonrpc": "2.0",
-                "id": 10,
+                "id": 12,
                 "method": "tools/call",
                 "params": {
                     "name": "submit_antigravity_result",
@@ -269,7 +311,7 @@ def main() -> int:
             proc,
             {
                 "jsonrpc": "2.0",
-                "id": 11,
+                "id": 13,
                 "method": "tools/call",
                 "params": {"name": "mcp_health_check", "arguments": {}},
             },

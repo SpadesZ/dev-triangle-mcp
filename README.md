@@ -44,6 +44,8 @@ What is stable today:
 
 - Codex can connect to the full `dev_triangle` MCP server.
 - Jules can be used through MCP when `JULES_API_KEY` is present.
+- Local projects can be prepared for Jules through a guarded GitHub repo
+  publishing flow that defaults to dry-run and private visibility.
 - Antigravity can be launched through the unattended `agy --print` route.
 - Antigravity receives a narrow task handoff and reports back through a tiny
   report-only MCP server.
@@ -242,6 +244,10 @@ Use **Jules** when:
 - A patch or PR is the desired output.
 - Cloud execution saves local context and user time.
 
+If the local project is not on GitHub yet, use `prepare_jules_repo` first. It
+can inspect the folder, add safe `.gitignore` defaults, create a private GitHub
+repo, push the project, and return the Jules source string.
+
 Use **Antigravity** when:
 
 - The task depends on local files or machine state.
@@ -298,6 +304,8 @@ find past jobs, handoffs, result files, and statuses.
 
 Main MCP server tools:
 
+- Jules repo preparation: inspect or publish a local project as a private
+  GitHub repo for Jules.
 - Jules tools: create sessions, list sessions, approve plans, send feedback,
   read outputs, save patches.
 - Antigravity tools: create handoffs, detect CLI, run handoffs, wait for

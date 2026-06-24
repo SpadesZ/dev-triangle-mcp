@@ -23,6 +23,7 @@ worker still fails, inspect the worker-specific section below.
 | Antigravity sees `dev_triangle` instead of `dev-triangle-report` | Worker config has the full control-plane server | Re-run installer; worker agents should see report-only MCP |
 | `JULES_API_KEY` missing | Key was not exported in the shell or environment | Set `$env:JULES_API_KEY = "your key"` before starting the client |
 | Jules returns unauthorized | Wrong or expired key | Refresh the key and keep it out of Git |
+| `prepare_jules_repo` is blocked | Secret-looking files, dirty repo, or missing confirmation | Read `safety.blockingFindings`, commit/ignore/remove risky files, then rerun |
 | `agy` not found | Antigravity CLI is missing or not on PATH | Install Antigravity CLI or set `ANTIGRAVITY_COMMAND` |
 | Handoff stuck at `AWAITING_RESULT` | Worker launched but did not submit a report | Check result path, result marker, and Antigravity output |
 | Result file exists but is not ready | Missing `DEV_TRIANGLE_RESULT_READY` marker | Have the worker submit through `complete_dev_triangle_handoff` |
@@ -113,8 +114,36 @@ If the key is present but Jules still fails:
 
 1. Confirm the key is valid.
 2. Confirm the target repo is connected to Jules.
-3. Use `jules_list_sources` before `jules_create_session`.
-4. Use `jules_list_activities` to inspect plan or execution state.
+3. If the project is local-only, run `prepare_jules_repo` before creating the Jules session.
+4. Use `jules_list_sources` before `jules_create_session`.
+5. Use `jules_list_activities` to inspect plan or execution state.
+
+## `prepare_jules_repo` Problems
+
+`prepare_jules_repo` defaults to dry-run:
+
+```text
+publish=false
+```
+
+To actually create and push a repo:
+
+```text
+publish=true
+confirmPublish=true
+```
+
+Common blockers:
+
+- A likely secret is present and would be tracked.
+- The project is already a git repo with uncommitted changes.
+- `gh` is not installed or not authenticated.
+- The target GitHub repo already exists but is not connected as a remote.
+- Public visibility was requested without `confirmPublic=true`.
+
+The safe default is private GitHub repo creation. If Jules still cannot see the
+repo after publishing, the GitHub repo may need to be allowed in Jules/GitHub app
+permissions before `jules_create_session` can use it.
 
 ## Antigravity CLI Problems
 

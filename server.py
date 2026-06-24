@@ -4,6 +4,7 @@ This process is the full control-plane MCP server intended for the
 orchestrator agent, currently Codex by default. It exposes tools for:
 
 - Jules cloud coding sessions.
+- Local project publishing guards that prepare GitHub repos for Jules.
 - Antigravity local validation handoffs.
 - The local job ledger used to connect task creation, execution, and results.
 
@@ -36,7 +37,7 @@ from urllib import error, parse, request
 
 
 SERVER_NAME = "dev-triangle-mcp"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 PROTOCOL_VERSION = "2025-06-18"
 
 # Runtime state is deliberately separate from source code. For local installs
@@ -205,6 +206,13 @@ def optional_string_list(args: dict[str, Any], name: str) -> list[str]:
     return [item.strip() for item in value if item.strip()]
 
 
+def optional_bool(args: dict[str, Any], name: str, default: bool) -> bool:
+    value = args.get(name, default)
+    if not isinstance(value, bool):
+        raise ToolError(f"Argument {name} must be a boolean.")
+    return value
+
+
 def normalize_session_name(value: str) -> str:
     value = value.strip().strip("/")
     if value.startswith("sessions/"):
@@ -276,6 +284,481 @@ def http_json(method: str, path: str, body: dict[str, Any] | None = None, params
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ToolError(f"Jules API returned non-JSON response: {raw[:500]}") from exc
+
+
+DEFAULT_JULES_GITIGNORE_LINES = [
+    ".env",
+    ".env.*",
+    "!.env.example",
+    ".dev-triangle/",
+    ".dev-triangle-test/",
+    ".dev-triangle-report-test/",
+    "demo-output/",
+    "logs/",
+    "__pycache__/",
+    "*.pyc",
+    "*.pyo",
+    "*.log",
+    "*.tmp",
+    "node_modules/",
+    ".venv/",
+    "venv/",
+    ".pytest_cache/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+]
+
+SCAN_EXCLUDED_DIRS = {
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".next",
+    "dist",
+    "build",
+    "target",
+    ".dev-triangle",
+    ".dev-triangle-test",
+    ".dev-triangle-report-test",
+    "demo-output",
+    "logs",
+}
+
+SENSITIVE_FILE_NAME_PATTERNS = [
+    re.compile(r"^\.env($|\.)", re.IGNORECASE),
+    re.compile(r"^id_rsa($|\.)", re.IGNORECASE),
+    re.compile(r"^id_dsa($|\.)", re.IGNORECASE),
+    re.compile(r"^id_ed25519($|\.)", re.IGNORECASE),
+    re.compile(r".*\.pem$", re.IGNORECASE),
+    re.compile(r".*\.p12$", re.IGNORECASE),
+    re.compile(r".*\.pfx$", re.IGNORECASE),
+]
+
+SECRET_CONTENT_PATTERNS = [
+    ("jules_api_key", re.compile(r"\bJULES_API_KEY\s*=\s*['\"]?[^'\"\s]{8,}", re.IGNORECASE)),
+    ("openai_api_key", re.compile(r"\bOPENAI_API_KEY\s*=\s*['\"]?[^'\"\s]{8,}", re.IGNORECASE)),
+    ("anthropic_api_key", re.compile(r"\bANTHROPIC_API_KEY\s*=\s*['\"]?[^'\"\s]{8,}", re.IGNORECASE)),
+    ("github_token", re.compile(r"\b(GITHUB_TOKEN|GH_TOKEN)\s*=\s*['\"]?[^'\"\s]{8,}", re.IGNORECASE)),
+    ("github_pat", re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b")),
+    ("jules_key_shape", re.compile(r"\bAQ\.[A-Za-z0-9_-]{20,}\b")),
+    ("generic_private_key", re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----")),
+]
+
+
+def run_native(command: list[str], cwd: Path | None = None, timeout: int = 60, allow_failure: bool = False) -> dict[str, Any]:
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(cwd) if cwd else None,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError as exc:
+        raise ToolError(f"Command not found: {command[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ToolError(f"Command timed out after {timeout}s: {' '.join(command)}") from exc
+
+    result = {
+        "command": command,
+        "exitCode": proc.returncode,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+    }
+    if proc.returncode != 0 and not allow_failure:
+        stderr = (proc.stderr or proc.stdout or "").strip()
+        raise ToolError(f"Command failed ({proc.returncode}): {' '.join(command)}\n{stderr[-2000:]}")
+    return result
+
+
+def resolve_project_dir(value: str) -> Path:
+    path = Path(value).expanduser().resolve()
+    if not path.exists():
+        raise ToolError(f"Project path does not exist: {path}")
+    if not path.is_dir():
+        raise ToolError(f"Project path must be a directory: {path}")
+    return path
+
+
+def is_git_repo(repo_path: Path) -> bool:
+    result = run_native(["git", "rev-parse", "--is-inside-work-tree"], cwd=repo_path, allow_failure=True)
+    return result["exitCode"] == 0 and result["stdout"].strip() == "true"
+
+
+def git_has_commits(repo_path: Path) -> bool:
+    return run_native(["git", "rev-parse", "--verify", "HEAD"], cwd=repo_path, allow_failure=True)["exitCode"] == 0
+
+
+def git_current_branch(repo_path: Path) -> str | None:
+    result = run_native(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_path, allow_failure=True)
+    branch = result["stdout"].strip()
+    if result["exitCode"] != 0 or not branch or branch == "HEAD":
+        return None
+    return branch
+
+
+def git_status_porcelain(repo_path: Path) -> str:
+    return run_native(["git", "status", "--porcelain"], cwd=repo_path)["stdout"]
+
+
+def git_dirty_paths(status_text: str) -> list[str]:
+    paths: list[str] = []
+    for line in status_text.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        paths.append(path.strip('"'))
+    return paths
+
+
+def ensure_git_identity(repo_path: Path) -> None:
+    if run_native(["git", "config", "user.name"], cwd=repo_path, allow_failure=True)["exitCode"] != 0:
+        run_native(["git", "config", "user.name", "Dev Triangle MCP"], cwd=repo_path)
+    if run_native(["git", "config", "user.email"], cwd=repo_path, allow_failure=True)["exitCode"] != 0:
+        run_native(["git", "config", "user.email", "dev-triangle-mcp@users.noreply.github.com"], cwd=repo_path)
+
+
+def git_remote_url(repo_path: Path, remote_name: str) -> str | None:
+    result = run_native(["git", "remote", "get-url", remote_name], cwd=repo_path, allow_failure=True)
+    if result["exitCode"] != 0:
+        return None
+    return result["stdout"].strip() or None
+
+
+def github_owner_repo_from_remote(remote_url: str | None) -> str | None:
+    if not remote_url:
+        return None
+    match = re.search(r"github\.com[:/](?P<owner>[^/\s:]+)/(?P<repo>[^/\s]+?)(?:\.git)?/?$", remote_url.strip())
+    if not match:
+        return None
+    owner = match.group("owner")
+    repo = match.group("repo")
+    return f"{owner}/{repo}"
+
+
+def sanitize_github_repo_name(value: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip(".-")
+    name = re.sub(r"-{2,}", "-", name)
+    if not name:
+        raise ToolError("Could not derive a GitHub repository name.")
+    if len(name) > 100:
+        name = name[:100].rstrip(".-")
+    return name
+
+
+def gh_current_owner() -> str:
+    result = run_native(["gh", "api", "user", "--jq", ".login"], timeout=30)
+    owner = result["stdout"].strip()
+    if not owner:
+        raise ToolError("Could not determine the authenticated GitHub owner from gh.")
+    return owner
+
+
+def gh_repo_exists(full_name: str) -> dict[str, Any] | None:
+    result = run_native(
+        ["gh", "repo", "view", full_name, "--json", "nameWithOwner,isPrivate,url"],
+        timeout=30,
+        allow_failure=True,
+    )
+    if result["exitCode"] != 0:
+        return None
+    try:
+        return json.loads(result["stdout"])
+    except json.JSONDecodeError:
+        return {"nameWithOwner": full_name}
+
+
+def ensure_default_gitignore(repo_path: Path, dry_run: bool) -> list[str]:
+    gitignore = repo_path / ".gitignore"
+    existing = ""
+    if gitignore.exists():
+        existing = gitignore.read_text(encoding="utf-8", errors="replace")
+    existing_lines = {line.strip() for line in existing.splitlines()}
+    missing = [line for line in DEFAULT_JULES_GITIGNORE_LINES if line not in existing_lines]
+    if missing and not dry_run:
+        prefix = "" if not existing or existing.endswith(("\n", "\r")) else "\n"
+        block = "\n# Dev Triangle MCP safety defaults\n" + "\n".join(missing) + "\n"
+        gitignore.write_text(existing + prefix + block, encoding="utf-8")
+    return missing
+
+
+def git_path_is_ignored(repo_path: Path, rel_path: str) -> bool:
+    result = run_native(["git", "check-ignore", "-q", "--", rel_path], cwd=repo_path, allow_failure=True)
+    return result["exitCode"] == 0
+
+
+def git_path_is_tracked(repo_path: Path, rel_path: str) -> bool:
+    result = run_native(["git", "ls-files", "--error-unmatch", "--", rel_path], cwd=repo_path, allow_failure=True)
+    return result["exitCode"] == 0
+
+
+def iter_scannable_files(repo_path: Path, max_files: int) -> tuple[list[Path], bool]:
+    files: list[Path] = []
+    truncated = False
+    for root, dirs, names in os.walk(repo_path):
+        dirs[:] = [name for name in dirs if name not in SCAN_EXCLUDED_DIRS]
+        for name in names:
+            path = Path(root) / name
+            if not path.is_file():
+                continue
+            files.append(path)
+            if len(files) >= max_files:
+                return files, True
+    return files, truncated
+
+
+def is_probably_text(path: Path, max_bytes: int = 1_000_000) -> bool:
+    try:
+        if path.stat().st_size > max_bytes:
+            return False
+        sample = path.read_bytes()[:4096]
+    except OSError:
+        return False
+    return b"\x00" not in sample
+
+
+def scan_repo_for_publish_safety(repo_path: Path, max_files: int = 3000) -> dict[str, Any]:
+    files, truncated = iter_scannable_files(repo_path, max_files)
+    git_repo = is_git_repo(repo_path)
+    blocking: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+
+    for path in files:
+        rel = path.relative_to(repo_path).as_posix()
+        ignored = git_path_is_ignored(repo_path, rel) if git_repo else False
+        tracked = git_path_is_tracked(repo_path, rel) if git_repo else False
+        should_block = tracked or not ignored
+
+        if path.name.lower() != ".env.example" and any(pattern.match(path.name) for pattern in SENSITIVE_FILE_NAME_PATTERNS):
+            finding = {"path": rel, "type": "sensitive_filename", "ignored": ignored, "tracked": tracked}
+            (blocking if should_block else warnings).append(finding)
+            continue
+
+        if is_probably_text(path):
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            for pattern_name, pattern in SECRET_CONTENT_PATTERNS:
+                if pattern.search(text):
+                    finding = {
+                        "path": rel,
+                        "type": "secret_pattern",
+                        "pattern": pattern_name,
+                        "ignored": ignored,
+                        "tracked": tracked,
+                    }
+                    (blocking if should_block else warnings).append(finding)
+                    break
+
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        if size > 50 * 1024 * 1024 and (tracked or not ignored):
+            warnings.append({"path": rel, "type": "large_file", "bytes": size, "ignored": ignored, "tracked": tracked})
+
+    return {
+        "scannedFiles": len(files),
+        "truncated": truncated,
+        "blockingFindings": blocking,
+        "warnings": warnings,
+    }
+
+
+def tool_prepare_jules_repo(args: dict[str, Any]) -> dict[str, Any]:
+    repo_path = resolve_project_dir(require_string(args, "repoPath", 2000))
+    publish = optional_bool(args, "publish", False)
+    confirm_publish = optional_bool(args, "confirmPublish", False)
+    create_remote = optional_bool(args, "createRemote", True)
+    push = optional_bool(args, "push", publish)
+    commit_changes = optional_bool(args, "commitChanges", False)
+    check_jules_source = optional_bool(args, "checkJulesSource", False)
+    visibility = optional_string(args, "visibility", 20) or "private"
+    if visibility not in {"private", "public", "internal"}:
+        raise ToolError("visibility must be private, public, or internal.")
+    if visibility == "public" and not optional_bool(args, "confirmPublic", False):
+        raise ToolError("Creating a public repo requires confirmPublic=true. The safe default is private.")
+    if publish and not confirm_publish:
+        raise ToolError("Publishing a local project requires confirmPublish=true.")
+
+    remote_name = optional_string(args, "remoteName", 100) or "origin"
+    branch_arg = optional_string(args, "branch", 200)
+    repo_name = sanitize_github_repo_name(optional_string(args, "repoName", 200) or repo_path.name)
+    github_owner = optional_string(args, "githubOwner", 200)
+    commit_message = optional_string(args, "commitMessage", 300) or "Prepare project for Jules"
+
+    run_native(["git", "--version"], timeout=30)
+    actions: list[str] = []
+    initial_git_repo = is_git_repo(repo_path)
+    gitignore_missing = ensure_default_gitignore(repo_path, dry_run=not publish)
+    if gitignore_missing:
+        actions.append(("would add" if not publish else "added") + " Dev Triangle safety entries to .gitignore")
+
+    if publish and not initial_git_repo:
+        branch_for_init = branch_arg or "main"
+        init = run_native(["git", "init", "-b", branch_for_init], cwd=repo_path, allow_failure=True)
+        if init["exitCode"] != 0:
+            run_native(["git", "init"], cwd=repo_path)
+            run_native(["git", "checkout", "-B", branch_for_init], cwd=repo_path)
+        actions.append(f"initialized git repository on {branch_for_init}")
+
+    git_repo = is_git_repo(repo_path)
+    safety = scan_repo_for_publish_safety(repo_path)
+    if publish and safety["blockingFindings"]:
+        return {
+            "status": "BLOCKED",
+            "reason": "Potential secrets or sensitive files would be published. Fix .gitignore, untrack the files, or remove the secrets first.",
+            "repoPath": str(repo_path),
+            "publish": publish,
+            "git": {"isRepo": git_repo, "wasRepo": initial_git_repo},
+            "safety": safety,
+            "actions": actions,
+        }
+
+    existing_remote_url = git_remote_url(repo_path, remote_name) if git_repo else None
+    existing_source = github_owner_repo_from_remote(existing_remote_url)
+    current_branch = git_current_branch(repo_path) if git_repo else None
+    branch = branch_arg or current_branch or "main"
+
+    if not publish:
+        planned_owner = github_owner or (existing_source.split("/", 1)[0] if existing_source else None)
+        planned_full_name = f"{planned_owner}/{repo_name}" if planned_owner else None
+        return {
+            "status": "DRY_RUN",
+            "repoPath": str(repo_path),
+            "publish": False,
+            "git": {
+                "isRepo": git_repo,
+                "branch": current_branch,
+                "remoteName": remote_name,
+                "remoteUrl": existing_remote_url,
+                "githubSource": existing_source,
+                "dirty": bool(git_status_porcelain(repo_path).strip()) if git_repo else None,
+            },
+            "github": {
+                "plannedOwner": planned_owner,
+                "plannedRepo": repo_name,
+                "plannedFullName": planned_full_name,
+                "visibility": visibility,
+            },
+            "jules": {
+                "source": existing_source or planned_full_name,
+                "normalizedSource": normalize_source(existing_source or planned_full_name) if (existing_source or planned_full_name) else None,
+                "note": "Run again with publish=true and confirmPublish=true to create/push the repo.",
+            },
+            "safety": safety,
+            "actions": actions or ["dry-run only; no files, remotes, commits, or GitHub repos were changed"],
+        }
+
+    if not git_repo:
+        raise ToolError("Expected git repository after initialization, but git is not available in the project path.")
+
+    has_commits = git_has_commits(repo_path)
+    status_text = git_status_porcelain(repo_path)
+    dirty = bool(status_text.strip())
+    if not has_commits:
+        run_native(["git", "add", "-A"], cwd=repo_path)
+        staged = run_native(["git", "diff", "--cached", "--quiet"], cwd=repo_path, allow_failure=True)
+        if staged["exitCode"] != 0:
+            ensure_git_identity(repo_path)
+            run_native(["git", "commit", "-m", commit_message], cwd=repo_path, timeout=120)
+            actions.append("created initial commit")
+    elif dirty:
+        dirty_paths = git_dirty_paths(status_text)
+        only_safety_gitignore = bool(dirty_paths) and all(path == ".gitignore" for path in dirty_paths)
+        if not commit_changes and not only_safety_gitignore:
+            return {
+                "status": "BLOCKED",
+                "reason": "Existing repo has uncommitted changes. Commit them yourself or rerun with commitChanges=true.",
+                "repoPath": str(repo_path),
+                "publish": publish,
+                "git": {"isRepo": True, "branch": branch, "dirty": True},
+                "safety": safety,
+                "actions": actions,
+            }
+        run_native(["git", "add", "-A"], cwd=repo_path)
+        staged = run_native(["git", "diff", "--cached", "--quiet"], cwd=repo_path, allow_failure=True)
+        if staged["exitCode"] != 0:
+            ensure_git_identity(repo_path)
+            run_native(["git", "commit", "-m", commit_message], cwd=repo_path, timeout=120)
+            actions.append("committed safety .gitignore defaults" if only_safety_gitignore else "committed existing dirty worktree changes")
+
+    remote_url = git_remote_url(repo_path, remote_name)
+    source = github_owner_repo_from_remote(remote_url)
+    repo_created = False
+    if not remote_url:
+        if not create_remote:
+            return {
+                "status": "BLOCKED",
+                "reason": f"No git remote named {remote_name}. Rerun with createRemote=true or add a GitHub remote.",
+                "repoPath": str(repo_path),
+                "publish": publish,
+                "git": {"isRepo": True, "branch": branch, "remoteName": remote_name},
+                "safety": safety,
+                "actions": actions,
+            }
+        owner = github_owner or gh_current_owner()
+        full_name = f"{owner}/{repo_name}"
+        existing_repo = gh_repo_exists(full_name)
+        if not existing_repo:
+            flag = {"private": "--private", "public": "--public", "internal": "--internal"}[visibility]
+            run_native(["gh", "repo", "create", full_name, flag], timeout=60)
+            repo_created = True
+            actions.append(f"created GitHub {visibility} repo {full_name}")
+        remote_url = f"https://github.com/{full_name}.git"
+        run_native(["git", "remote", "add", remote_name, remote_url], cwd=repo_path)
+        source = full_name
+        actions.append(f"added git remote {remote_name}")
+
+    if push:
+        run_native(["git", "push", "-u", remote_name, branch], cwd=repo_path, timeout=180)
+        actions.append(f"pushed {branch} to {remote_name}")
+
+    jules: dict[str, Any] = {
+        "source": source,
+        "normalizedSource": normalize_source(source) if source else None,
+        "apiKeyPresent": bool(os.environ.get("JULES_API_KEY", "").strip()),
+    }
+    if check_jules_source:
+        if not jules["apiKeyPresent"]:
+            jules["visible"] = None
+            jules["visibilityNote"] = "JULES_API_KEY is not set, so source visibility was not checked."
+        else:
+            try:
+                sources = http_json("GET", "/sources", params={"pageSize": 100}).get("sources", [])
+                normalized = jules["normalizedSource"]
+                names = [item.get("name") for item in sources]
+                jules["visible"] = normalized in names or source in names
+                jules["sourceCount"] = len(sources)
+            except ToolError as exc:
+                jules["visible"] = None
+                jules["visibilityError"] = str(exc)
+
+    return {
+        "status": "READY_FOR_JULES" if source else "PUBLISHED_WITHOUT_GITHUB_SOURCE",
+        "repoPath": str(repo_path),
+        "publish": True,
+        "git": {
+            "isRepo": True,
+            "branch": branch,
+            "remoteName": remote_name,
+            "remoteUrl": git_remote_url(repo_path, remote_name),
+            "dirty": bool(git_status_porcelain(repo_path).strip()),
+        },
+        "github": {"source": source, "repoCreated": repo_created, "visibility": visibility},
+        "jules": jules,
+        "safety": safety,
+        "actions": actions,
+    }
 
 
 def upsert_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -1145,6 +1628,33 @@ TOOLS = [
         ),
     },
     {
+        "name": "prepare_jules_repo",
+        "title": "Prepare Local Project For Jules",
+        "description": (
+            "Inspect or publish a local project as a GitHub repository Jules can use. "
+            "Defaults to dry-run; publish=true requires confirmPublish=true and defaults to private visibility."
+        ),
+        "inputSchema": schema(
+            {
+                "repoPath": {"type": "string", "description": "Local project directory to prepare."},
+                "publish": {"type": "boolean", "default": False},
+                "confirmPublish": {"type": "boolean", "default": False},
+                "repoName": {"type": "string", "description": "Optional GitHub repository name. Defaults to folder name."},
+                "githubOwner": {"type": "string", "description": "Optional GitHub user or org. Defaults to gh authenticated user."},
+                "visibility": {"type": "string", "description": "private, public, or internal. Defaults to private."},
+                "confirmPublic": {"type": "boolean", "default": False},
+                "remoteName": {"type": "string", "default": "origin"},
+                "branch": {"type": "string", "description": "Branch to publish. Defaults to current branch or main."},
+                "createRemote": {"type": "boolean", "default": True},
+                "push": {"type": "boolean", "default": True},
+                "commitChanges": {"type": "boolean", "default": False},
+                "commitMessage": {"type": "string", "default": "Prepare project for Jules"},
+                "checkJulesSource": {"type": "boolean", "default": False},
+            },
+            ["repoPath"],
+        ),
+    },
+    {
         "name": "jules_get_session",
         "title": "Get Jules Session",
         "description": "Get a Jules session and update the local job ledger.",
@@ -1318,6 +1828,7 @@ HANDLERS = {
     "jules_list_sources": tool_jules_list_sources,
     "jules_list_sessions": tool_jules_list_sessions,
     "jules_create_session": tool_jules_create_session,
+    "prepare_jules_repo": tool_prepare_jules_repo,
     "jules_get_session": tool_jules_get_session,
     "jules_list_activities": tool_jules_list_activities,
     "jules_send_message": tool_jules_send_message,
