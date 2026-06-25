@@ -843,6 +843,23 @@ def tool_jules_list_sessions(args: dict[str, Any]) -> dict[str, Any]:
     return {"sessions": payload.get("sessions", []), "nextPageToken": payload.get("nextPageToken")}
 
 
+def jules_default_branch_for_source(source_name: str) -> str | None:
+    page_token: str | None = None
+    for _ in range(10):
+        payload = http_json("GET", "/sources", params={"pageSize": 100, "pageToken": page_token})
+        for source in payload.get("sources", []):
+            if source.get("name") != source_name and source.get("id") != source_name.removeprefix("sources/"):
+                continue
+            github_repo = source.get("githubRepo") or {}
+            default_branch = github_repo.get("defaultBranch") or {}
+            branch = default_branch.get("displayName")
+            return branch if isinstance(branch, str) and branch.strip() else None
+        page_token = payload.get("nextPageToken")
+        if not page_token:
+            break
+    return None
+
+
 def tool_jules_create_session(args: dict[str, Any]) -> dict[str, Any]:
     prompt = require_string(args, "prompt", 40000)
     title = optional_string(args, "title", 200)
@@ -857,9 +874,11 @@ def tool_jules_create_session(args: dict[str, Any]) -> dict[str, Any]:
     if title:
         body["title"] = title
     if source:
-        source_context: dict[str, Any] = {"source": normalize_source(source)}
-        if starting_branch:
-            source_context["githubRepoContext"] = {"startingBranch": starting_branch}
+        normalized_source = normalize_source(source)
+        source_context: dict[str, Any] = {"source": normalized_source}
+        if normalized_source.startswith("sources/github/"):
+            branch = starting_branch or jules_default_branch_for_source(normalized_source) or "main"
+            source_context["githubRepoContext"] = {"startingBranch": branch}
         body["sourceContext"] = source_context
     if automation_mode:
         body["automationMode"] = automation_mode
@@ -1110,9 +1129,13 @@ def resolve_antigravity_command(command_override: str | None = None) -> dict[str
 
 def tool_antigravity_detect_cli(args: dict[str, Any]) -> dict[str, Any]:
     command = optional_string(args, "command", 2000)
+    smoke_print = args.get("smokePrint", False)
+    if not isinstance(smoke_print, bool):
+        raise ToolError("Argument smokePrint must be a boolean.")
+    smoke_timeout_sec = optional_int(args, "smokeTimeoutSec", 30, 5, 120)
     detected = resolve_antigravity_command(command)
     command_kind = antigravity_command_kind(detected["command"])
-    return {
+    payload = {
         "available": detected["available"],
         "command": detected["command"],
         "commandKind": command_kind,
@@ -1129,6 +1152,9 @@ def tool_antigravity_detect_cli(args: dict[str, Any]) -> dict[str, Any]:
             )
         ),
     }
+    if smoke_print:
+        payload["printSmoke"] = run_antigravity_print_smoke(detected["command"], smoke_timeout_sec)
+    return payload
 
 
 def antigravity_command_kind(command: str | None) -> str:
@@ -1166,19 +1192,16 @@ def build_antigravity_command_line(
             style = "prompt_arg"
 
     if style == "agy_print":
-        model = os.environ.get("ANTIGRAVITY_AGY_MODEL", "Gemini 3.5 Flash (Medium)")
+        model = os.environ.get("ANTIGRAVITY_AGY_MODEL", "").strip()
         timeout = os.environ.get("ANTIGRAVITY_AGY_PRINT_TIMEOUT", "30m")
-        command_line = [
-            command,
-            "--model",
-            model,
-            "--print",
-            "--print-timeout",
-            timeout,
-        ]
+        command_line = [command]
+        if os.environ.get("ANTIGRAVITY_AGY_NEW_PROJECT", "0") not in {"0", "false", "False"}:
+            command_line.append("--new-project")
+        if model:
+            command_line += ["--model", model]
+        command_line += ["--print", prompt, "--print-timeout", timeout]
         if os.environ.get("ANTIGRAVITY_AGY_SKIP_PERMISSIONS", "1") not in {"0", "false", "False"}:
             command_line.append("--dangerously-skip-permissions")
-        command_line.append(prompt)
         return command_line, style
 
     if style == "ide_chat":
@@ -1220,6 +1243,63 @@ def antigravity_subprocess_env(command: str) -> dict[str, str]:
     return env
 
 
+def run_antigravity_print_smoke(command: str | None, timeout_sec: int) -> dict[str, Any]:
+    if not command:
+        return {"ran": False, "passed": False, "reason": "Antigravity command is unavailable."}
+    if antigravity_command_kind(command) != "agy_cli":
+        return {"ran": False, "passed": False, "reason": "Print smoke only supports agy CLI."}
+
+    expected = "DEV_TRIANGLE_AGY_SMOKE_OK"
+    command_line: list[str] = [command]
+    if os.environ.get("ANTIGRAVITY_AGY_NEW_PROJECT", "0") not in {"0", "false", "False"}:
+        command_line.append("--new-project")
+    agy_model = os.environ.get("ANTIGRAVITY_AGY_MODEL", "").strip()
+    if agy_model:
+        command_line += ["--model", agy_model]
+    command_line += [
+        "--print",
+        f"Reply with exactly: {expected}",
+        "--print-timeout",
+        f"{timeout_sec}s",
+    ]
+    if os.environ.get("ANTIGRAVITY_AGY_SKIP_PERMISSIONS", "1") != "0":
+        command_line.append("--dangerously-skip-permissions")
+
+    try:
+        completed = subprocess.run(
+            command_line,
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_sec + 15,
+            env=antigravity_subprocess_env(command),
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ran": True,
+            "passed": False,
+            "timedOut": True,
+            "timeoutSec": timeout_sec,
+            "stdoutNonEmpty": bool((exc.stdout or "").strip()),
+            "stderrNonEmpty": bool((exc.stderr or "").strip()),
+        }
+
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+    return {
+        "ran": True,
+        "passed": completed.returncode == 0 and expected in stdout,
+        "exitCode": completed.returncode,
+        "stdoutNonEmpty": bool(stdout.strip()),
+        "stderrNonEmpty": bool(stderr.strip()),
+        "expectedTokenFound": expected in stdout,
+        "stdoutTail": stdout[-500:],
+        "stderrTail": stderr[-500:],
+    }
+
+
 def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
     # This is the local validation bridge:
     # 1. Find a prepared handoff markdown file.
@@ -1240,6 +1320,7 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
     )
     timeout_sec = optional_int(args, "timeoutSec", 1800, 30, 14400)
     result_timeout_sec = optional_int(args, "resultTimeoutSec", 1800, 10, 14400)
+    empty_stdout_result_grace_sec = optional_int(args, "emptyStdoutResultGraceSec", 15, 1, 300)
     poll_interval_sec = optional_int(args, "pollIntervalSec", 5, 1, 120)
     result_path_arg = optional_string(args, "resultPath", 2000)
     dry_run = args.get("dryRun", False)
@@ -1367,6 +1448,10 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
         status = "LAUNCHED"
     else:
         status = "COMPLETED" if completed.returncode == 0 else "FAILED"
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+    stdout_empty = not stdout.strip()
+    stderr_empty = not stderr.strip()
     run_record = {
         "at": now_iso(),
         "commandLine": command_line,
@@ -1376,14 +1461,30 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
         "waitForResult": wait_for_result,
         "resultPath": str(result_path),
         "exitCode": completed.returncode,
-        "stdoutTail": completed.stdout[-4000:],
-        "stderrTail": completed.stderr[-4000:],
+        "stdoutEmpty": stdout_empty,
+        "stderrEmpty": stderr_empty,
+        "stdoutTail": stdout[-4000:],
+        "stderrTail": stderr[-4000:],
     }
     result_payload: dict[str, Any] | None = None
     if completed.returncode == 0 and wait_for_result:
-        result_payload = wait_for_result_file(result_path, result_timeout_sec, poll_interval_sec)
+        effective_result_timeout_sec = result_timeout_sec
+        if resolved_style == "agy_print" and stdout_empty and not result_path.exists():
+            effective_result_timeout_sec = min(result_timeout_sec, empty_stdout_result_grace_sec)
+            run_record["emptyStdoutResultGraceSec"] = effective_result_timeout_sec
+            run_record["diagnostic"] = (
+                "agy --print exited 0 with empty stdout and no result file. agy print mode can stream "
+                "planner/tool-call events without emitting a final printable response; use the result "
+                "mailbox or report MCP as the completion signal."
+            )
+        result_payload = wait_for_result_file(result_path, effective_result_timeout_sec, poll_interval_sec)
         run_record["result"] = result_payload
-        status = "COMPLETED" if result_payload["ready"] else "AWAITING_RESULT"
+        if result_payload["ready"]:
+            status = "COMPLETED"
+        elif resolved_style == "agy_print" and stdout_empty:
+            status = "DEGRADED_NO_RESULT"
+        else:
+            status = "AWAITING_RESULT"
 
     updated = update_handoff(handoff.get("id"), {"status": status, "lastRun": run_record})
     response = {
@@ -1394,8 +1495,10 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
         "completionCapture": resolved_style != "ide_chat",
         "waitForResult": wait_for_result,
         "resultPath": str(result_path),
-        "stdoutTail": completed.stdout[-4000:],
-        "stderrTail": completed.stderr[-4000:],
+        "stdoutEmpty": stdout_empty,
+        "stderrEmpty": stderr_empty,
+        "stdoutTail": stdout[-4000:],
+        "stderrTail": stderr[-4000:],
     }
     if result_payload is not None:
         response["result"] = result_payload
@@ -1500,6 +1603,10 @@ def tool_mcp_health_check(args: dict[str, Any]) -> dict[str, Any]:
     include_jules = args.get("includeJules", False)
     if not isinstance(include_jules, bool):
         raise ToolError("Argument includeJules must be a boolean.")
+    include_antigravity_print_smoke = args.get("includeAntigravityPrintSmoke", False)
+    if not isinstance(include_antigravity_print_smoke, bool):
+        raise ToolError("Argument includeAntigravityPrintSmoke must be a boolean.")
+    antigravity_smoke_timeout_sec = optional_int(args, "antigravitySmokeTimeoutSec", 30, 5, 120)
     antigravity = resolve_antigravity_command(optional_string(args, "antigravityCommand", 2000))
     payload: dict[str, Any] = {
         "server": {"name": SERVER_NAME, "version": SERVER_VERSION, "protocolVersion": PROTOCOL_VERSION},
@@ -1533,6 +1640,11 @@ def tool_mcp_health_check(args: dict[str, Any]) -> dict[str, Any]:
         except ToolError as exc:
             payload["jules"]["reachable"] = False
             payload["jules"]["error"] = str(exc)
+    if include_antigravity_print_smoke:
+        payload["antigravity"]["printSmoke"] = run_antigravity_print_smoke(
+            antigravity["command"],
+            antigravity_smoke_timeout_sec,
+        )
     return payload
 
 
@@ -1723,7 +1835,13 @@ TOOLS = [
         "name": "antigravity_detect_cli",
         "title": "Detect Antigravity CLI",
         "description": "Detect whether an Antigravity CLI command is available for non-interactive handoff execution.",
-        "inputSchema": schema({"command": {"type": "string", "description": "Optional executable path or command name."}}),
+        "inputSchema": schema(
+            {
+                "command": {"type": "string", "description": "Optional executable path or command name."},
+                "smokePrint": {"type": "boolean", "default": False},
+                "smokeTimeoutSec": {"type": "integer", "minimum": 5, "maximum": 120, "default": 30},
+            }
+        ),
     },
     {
         "name": "run_antigravity_handoff",
@@ -1746,6 +1864,13 @@ TOOLS = [
                 "waitForResult": {"type": "boolean", "default": False},
                 "resultPath": {"type": "string", "description": "Optional result report path under the configured result directory."},
                 "resultTimeoutSec": {"type": "integer", "minimum": 10, "maximum": 14400, "default": 1800},
+                "emptyStdoutResultGraceSec": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 300,
+                    "default": 15,
+                    "description": "Short grace wait when agy --print exits 0 with empty stdout and no result file.",
+                },
                 "pollIntervalSec": {"type": "integer", "minimum": 1, "maximum": 120, "default": 5},
                 "dryRun": {"type": "boolean", "default": False},
             },
@@ -1791,6 +1916,8 @@ TOOLS = [
             {
                 "includeJules": {"type": "boolean", "default": False},
                 "antigravityCommand": {"type": "string"},
+                "includeAntigravityPrintSmoke": {"type": "boolean", "default": False},
+                "antigravitySmokeTimeoutSec": {"type": "integer", "minimum": 5, "maximum": 120, "default": 30},
             }
         ),
     },

@@ -86,10 +86,29 @@ print(f"wrote {path}")
     return fake_sh
 
 
+def create_empty_antigravity() -> Path:
+    TEST_STATE.mkdir(parents=True, exist_ok=True)
+    fake_py = TEST_STATE / "empty_antigravity.py"
+    fake_py.write_text(
+        "from __future__ import annotations\n"
+        "raise SystemExit(0)\n",
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        fake_cmd = TEST_STATE / "empty-antigravity.cmd"
+        fake_cmd.write_text(f'@echo off\n"{sys.executable}" "{fake_py}" %*\n', encoding="utf-8")
+        return fake_cmd
+    fake_sh = TEST_STATE / "empty-antigravity"
+    fake_sh.write_text(f'#!/usr/bin/env sh\n"{sys.executable}" "{fake_py}" "$@"\n', encoding="utf-8")
+    fake_sh.chmod(fake_sh.stat().st_mode | stat.S_IEXEC)
+    return fake_sh
+
+
 def main() -> int:
     env = os.environ.copy()
     env["DEV_TRIANGLE_HOME"] = str(TEST_STATE)
     env["ANTIGRAVITY_HANDOFF_DIR"] = str(TEST_STATE / "antigravity-handoffs")
+    env.pop("ANTIGRAVITY_AGY_MODEL", None)
     proc = subprocess.Popen(
         [sys.executable, str(SERVER)],
         stdin=subprocess.PIPE,
@@ -226,6 +245,30 @@ def main() -> int:
         assert dry_run["result"]["isError"] is False
         assert dry_run["result"]["structuredContent"]["dryRun"] is True
 
+        agy_dry_run = rpc(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 81,
+                "method": "tools/call",
+                "params": {
+                    "name": "run_antigravity_handoff",
+                    "arguments": {
+                        "handoff": handoff_id,
+                        "command": "agy.exe",
+                        "executionStyle": "agy_print",
+                        "dryRun": True,
+                    },
+                },
+            },
+        )
+        assert agy_dry_run["result"]["isError"] is False
+        agy_command = agy_dry_run["result"]["structuredContent"]["commandLine"]
+        assert "--model" not in agy_command
+        print_idx = agy_command.index("--print")
+        assert agy_command[print_idx + 1].startswith("Use the handoff at ")
+        assert agy_command[print_idx + 2] == "--print-timeout"
+
         missing_cli = rpc(
             proc,
             {
@@ -284,6 +327,31 @@ def main() -> int:
         assert get_result["result"]["isError"] is False
         assert get_result["result"]["structuredContent"]["status"] == "COMPLETED"
         assert get_result["result"]["structuredContent"]["result"]["ready"] is True
+
+        empty_cmd = create_empty_antigravity()
+        empty_closed_loop = rpc(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 101,
+                "method": "tools/call",
+                "params": {
+                    "name": "run_antigravity_handoff",
+                    "arguments": {
+                        "handoff": handoff_id,
+                        "command": str(empty_cmd),
+                        "executionStyle": "agy_print",
+                        "waitForResult": True,
+                        "resultTimeoutSec": 10,
+                        "emptyStdoutResultGraceSec": 1,
+                        "pollIntervalSec": 1,
+                    },
+                },
+            },
+        )
+        assert empty_closed_loop["result"]["isError"] is False
+        assert empty_closed_loop["result"]["structuredContent"]["status"] == "DEGRADED_NO_RESULT"
+        assert empty_closed_loop["result"]["structuredContent"]["stdoutEmpty"] is True
 
         direct_submit = rpc(
             proc,

@@ -26,6 +26,7 @@ worker still fails, inspect the worker-specific section below.
 | `prepare_jules_repo` is blocked | Secret-looking files, dirty repo, or missing confirmation | Read `safety.blockingFindings`, commit/ignore/remove risky files, then rerun |
 | `agy` not found | Antigravity CLI is missing or not on PATH | Install Antigravity CLI or set `ANTIGRAVITY_COMMAND` |
 | Handoff stuck at `AWAITING_RESULT` | Worker launched but did not submit a report | Check result path, result marker, and Antigravity output |
+| Handoff returns `DEGRADED_NO_RESULT` | `agy --print` exited 0 with empty stdout and no result file | Check report MCP config, result path permissions, and avoid unverified model labels |
 | Result file exists but is not ready | Missing `DEV_TRIANGLE_RESULT_READY` marker | Have the worker submit through `complete_dev_triangle_handoff` |
 | Smoke test passes but real demo fails | Protocol is healthy, real CLI/auth/model path is not | Run `doctor.ps1`, then test `agy --version` and the demo again |
 | CI passes but local worker fails | CI uses fake worker paths | Use `demo-user-flow.ps1` for real local validation |
@@ -170,6 +171,32 @@ Then run:
 ```powershell
 .\scripts\doctor.ps1
 ```
+
+### `agy --print` exits 0 but stdout is empty
+
+This can happen even when Antigravity authenticated and hit the model stream.
+The CLI may emit planner or tool-call events without a final printable response.
+Dev Triangle therefore treats stdout as diagnostic only; a handoff is complete
+only when `complete_dev_triangle_handoff` is called or the result file contains
+`DEV_TRIANGLE_RESULT_READY`.
+
+Common causes:
+
+- The worker did not submit through `dev-triangle-report`.
+- The result file was not written under the allowed result directory.
+- `ANTIGRAVITY_AGY_MODEL` names a model label that is not available locally.
+- The agent spent the run planning or calling tools and never produced a final
+  report.
+
+Fixes:
+
+- Leave `ANTIGRAVITY_AGY_MODEL` unset unless you have verified the exact local
+  label.
+- Run `mcp_health_check` with `includeAntigravityPrintSmoke=true` when you need
+  to diagnose headless output.
+- Prefer the report-only MCP path: `complete_dev_triangle_handoff`.
+- If stdout is empty and no result file appears, Dev Triangle should report
+  `DEGRADED_NO_RESULT` instead of waiting for the full result timeout.
 
 ## Handoff Stuck At `AWAITING_RESULT`
 

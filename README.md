@@ -49,6 +49,9 @@ What is stable today:
 - Antigravity can be launched through the unattended `agy --print` route.
 - Antigravity receives a narrow task handoff and reports back through a tiny
   report-only MCP server.
+- `agy --print` stdout is diagnostic only. Planner/tool-call streams may exit
+  successfully with empty stdout, so the closed-loop completion signal is the
+  report MCP or result file marker.
 - The local ledger records jobs, handoffs, statuses, result paths, and notes.
 - CI validates the MCP protocol on Windows and Ubuntu without needing real
   Jules or Antigravity credentials.
@@ -60,6 +63,9 @@ What is intentionally not claimed:
 - This does not store Jules secrets for you.
 - The older Antigravity IDE chat launch path can open a UI, but the stable
   unattended path is `agy --print`.
+- Do not hard-code an Antigravity model label unless it has been verified on the
+  local machine. If `ANTIGRAVITY_AGY_MODEL` is unset, Dev Triangle lets `agy`
+  choose its own default model.
 - CI uses deterministic fake worker paths. Real local Antigravity validation is
   covered by `scripts/demo-user-flow.ps1` on a machine with `agy` installed.
 
