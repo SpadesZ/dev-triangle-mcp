@@ -55,6 +55,7 @@ PATCH_DIR = DEV_TRIANGLE_HOME / "patches"
 RESULT_DIR = DEV_TRIANGLE_HOME / "antigravity-results"
 ANTIGRAVITY_DEFAULT_PROMPT_ARG = "-p"
 ANTIGRAVITY_RESULT_MARKER = "DEV_TRIANGLE_RESULT_READY"
+ANTIGRAVITY_LEGACY_UNSAFE_MODELS = {"Gemini 3.5 Flash (Medium)"}
 
 
 class ToolError(Exception):
@@ -1135,13 +1136,15 @@ def tool_antigravity_detect_cli(args: dict[str, Any]) -> dict[str, Any]:
     smoke_timeout_sec = optional_int(args, "smokeTimeoutSec", 30, 5, 120)
     detected = resolve_antigravity_command(command)
     command_kind = antigravity_command_kind(detected["command"])
+    agy_model, agy_model_note = configured_antigravity_agy_model()
     payload = {
         "available": detected["available"],
         "command": detected["command"],
         "commandKind": command_kind,
         "checked": detected["checked"],
         "promptArg": os.environ.get("ANTIGRAVITY_PROMPT_ARG", ANTIGRAVITY_DEFAULT_PROMPT_ARG),
-        "agyModel": os.environ.get("ANTIGRAVITY_AGY_MODEL", "Gemini 3.5 Flash (Medium)"),
+        "agyModel": agy_model,
+        "agyModelNote": agy_model_note,
         "note": (
             "Set ANTIGRAVITY_COMMAND to the full Antigravity CLI path if auto-detection fails."
             if not detected["available"]
@@ -1155,6 +1158,15 @@ def tool_antigravity_detect_cli(args: dict[str, Any]) -> dict[str, Any]:
     if smoke_print:
         payload["printSmoke"] = run_antigravity_print_smoke(detected["command"], smoke_timeout_sec)
     return payload
+
+
+def configured_antigravity_agy_model() -> tuple[str, str | None]:
+    model = os.environ.get("ANTIGRAVITY_AGY_MODEL", "").strip()
+    if not model:
+        return "", None
+    if model in ANTIGRAVITY_LEGACY_UNSAFE_MODELS:
+        return "", f"Ignored legacy unsafe ANTIGRAVITY_AGY_MODEL value: {model}"
+    return model, None
 
 
 def antigravity_command_kind(command: str | None) -> str:
@@ -1192,7 +1204,7 @@ def build_antigravity_command_line(
             style = "prompt_arg"
 
     if style == "agy_print":
-        model = os.environ.get("ANTIGRAVITY_AGY_MODEL", "").strip()
+        model, _ = configured_antigravity_agy_model()
         timeout = os.environ.get("ANTIGRAVITY_AGY_PRINT_TIMEOUT", "30m")
         command_line = [command]
         if os.environ.get("ANTIGRAVITY_AGY_NEW_PROJECT", "0") not in {"0", "false", "False"}:
@@ -1253,7 +1265,7 @@ def run_antigravity_print_smoke(command: str | None, timeout_sec: int) -> dict[s
     command_line: list[str] = [command]
     if os.environ.get("ANTIGRAVITY_AGY_NEW_PROJECT", "0") not in {"0", "false", "False"}:
         command_line.append("--new-project")
-    agy_model = os.environ.get("ANTIGRAVITY_AGY_MODEL", "").strip()
+    agy_model, agy_model_note = configured_antigravity_agy_model()
     if agy_model:
         command_line += ["--model", agy_model]
     command_line += [
@@ -1284,6 +1296,7 @@ def run_antigravity_print_smoke(command: str | None, timeout_sec: int) -> dict[s
             "timeoutSec": timeout_sec,
             "stdoutNonEmpty": bool((exc.stdout or "").strip()),
             "stderrNonEmpty": bool((exc.stderr or "").strip()),
+            "modelNote": agy_model_note,
         }
 
     stdout = completed.stdout or ""
@@ -1295,6 +1308,7 @@ def run_antigravity_print_smoke(command: str | None, timeout_sec: int) -> dict[s
         "stdoutNonEmpty": bool(stdout.strip()),
         "stderrNonEmpty": bool(stderr.strip()),
         "expectedTokenFound": expected in stdout,
+        "modelNote": agy_model_note,
         "stdoutTail": stdout[-500:],
         "stderrTail": stderr[-500:],
     }

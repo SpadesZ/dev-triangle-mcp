@@ -192,6 +192,8 @@ Fixes:
 
 - Leave `ANTIGRAVITY_AGY_MODEL` unset unless you have verified the exact local
   label.
+- Dev Triangle ignores the legacy unsafe `Gemini 3.5 Flash (Medium)` value even
+  when a parent process still has it in the environment.
 - Run `mcp_health_check` with `includeAntigravityPrintSmoke=true` when you need
   to diagnose headless output.
 - Prefer the report-only MCP path: `complete_dev_triangle_handoff`.

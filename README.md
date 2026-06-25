@@ -66,6 +66,8 @@ What is intentionally not claimed:
 - Do not hard-code an Antigravity model label unless it has been verified on the
   local machine. If `ANTIGRAVITY_AGY_MODEL` is unset, Dev Triangle lets `agy`
   choose its own default model.
+- Dev Triangle ignores the legacy unsafe `Gemini 3.5 Flash (Medium)` value even
+  if it is inherited from the parent process environment.
 - CI uses deterministic fake worker paths. Real local Antigravity validation is
   covered by `scripts/demo-user-flow.ps1` on a machine with `agy` installed.
 

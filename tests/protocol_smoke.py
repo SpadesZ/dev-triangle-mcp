@@ -108,7 +108,7 @@ def main() -> int:
     env = os.environ.copy()
     env["DEV_TRIANGLE_HOME"] = str(TEST_STATE)
     env["ANTIGRAVITY_HANDOFF_DIR"] = str(TEST_STATE / "antigravity-handoffs")
-    env.pop("ANTIGRAVITY_AGY_MODEL", None)
+    env["ANTIGRAVITY_AGY_MODEL"] = "Gemini 3.5 Flash (Medium)"
     proc = subprocess.Popen(
         [sys.executable, str(SERVER)],
         stdin=subprocess.PIPE,

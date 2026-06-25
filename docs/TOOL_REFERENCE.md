@@ -246,6 +246,8 @@ Optional diagnostics:
 The smoke is diagnostic. Some Antigravity planner/tool-call streams can exit
 with empty stdout, so a failed print smoke does not mean `agy` is missing; it
 means headless completion capture needs the result mailbox/report MCP path.
+If the environment contains the legacy unsafe `Gemini 3.5 Flash (Medium)`
+model value, Dev Triangle ignores it and reports that through `agyModelNote`.
 
 ### `run_antigravity_handoff`
 
