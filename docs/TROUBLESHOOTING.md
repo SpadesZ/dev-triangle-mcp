@@ -26,7 +26,7 @@ worker still fails, inspect the worker-specific section below.
 | `prepare_jules_repo` is blocked | Secret-looking files, dirty repo, or missing confirmation | Read `safety.blockingFindings`, commit/ignore/remove risky files, then rerun |
 | `agy` not found | Antigravity CLI is missing or not on PATH | Install Antigravity CLI or set `ANTIGRAVITY_COMMAND` |
 | Handoff stuck at `AWAITING_RESULT` | Worker launched but did not submit a report | Check result path, result marker, and Antigravity output |
-| Handoff returns `DEGRADED_NO_RESULT` | `agy --print` exited 0 with empty stdout and no result file | Check report MCP config, result path permissions, and avoid unverified model labels |
+| Handoff returns `DEGRADED_NO_RESULT` | `agy --print` exited 0 with empty stdout, no result file, and no recoverable marker in the Antigravity conversation DB | Check report MCP config, result path permissions, and avoid unverified model labels |
 | Result file exists but is not ready | Missing `DEV_TRIANGLE_RESULT_READY` marker | Have the worker submit through `complete_dev_triangle_handoff` |
 | Smoke test passes but real demo fails | Protocol is healthy, real CLI/auth/model path is not | Run `doctor.ps1`, then test `agy --version` and the demo again |
 | CI passes but local worker fails | CI uses fake worker paths | Use `demo-user-flow.ps1` for real local validation |
@@ -197,8 +197,14 @@ Fixes:
 - Run `mcp_health_check` with `includeAntigravityPrintSmoke=true` when you need
   to diagnose headless output.
 - Prefer the report-only MCP path: `complete_dev_triangle_handoff`.
-- If stdout is empty and no result file appears, Dev Triangle should report
-  `DEGRADED_NO_RESULT` instead of waiting for the full result timeout.
+- If stdout is empty and no result file appears, Dev Triangle checks recent
+  Antigravity conversation SQLite databases for `DEV_TRIANGLE_RESULT_READY`.
+  Only when the mailbox and database fallback both fail should it report
+  `DEGRADED_NO_RESULT`.
+- If `agy` keeps selecting an unavailable or stale model, open Antigravity once,
+  switch the model in the visible selector, and leave `ANTIGRAVITY_AGY_MODEL`
+  unset. Do not encode a model label in Codex config or install templates unless
+  it has just been verified locally.
 
 ## Handoff Stuck At `AWAITING_RESULT`
 

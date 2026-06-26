@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -56,6 +57,7 @@ RESULT_DIR = DEV_TRIANGLE_HOME / "antigravity-results"
 ANTIGRAVITY_DEFAULT_PROMPT_ARG = "-p"
 ANTIGRAVITY_RESULT_MARKER = "DEV_TRIANGLE_RESULT_READY"
 ANTIGRAVITY_LEGACY_UNSAFE_MODELS = {"Gemini 3.5 Flash (Medium)"}
+ANTIGRAVITY_DB_SCAN_LIMIT = 8
 
 
 class ToolError(Exception):
@@ -1255,6 +1257,101 @@ def antigravity_subprocess_env(command: str) -> dict[str, str]:
     return env
 
 
+def antigravity_conversation_dir() -> Path:
+    override = os.environ.get("ANTIGRAVITY_AGY_CONVERSATION_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".gemini" / "antigravity-cli" / "conversations"
+
+
+def recent_antigravity_conversation_dbs(started_at: float, limit: int = ANTIGRAVITY_DB_SCAN_LIMIT) -> list[Path]:
+    conversation_dir = antigravity_conversation_dir()
+    if not conversation_dir.exists():
+        return []
+    dbs = sorted(conversation_dir.glob("*.db"), key=lambda item: item.stat().st_mtime, reverse=True)
+    recent = [db for db in dbs if db.stat().st_mtime >= started_at - 5]
+    return (recent or dbs)[:limit]
+
+
+def printable_blob_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="ignore")
+    else:
+        text = str(value)
+    # The Antigravity SQLite payloads are protobuf-ish blobs with useful UTF-8
+    # fragments. Keep printable text and common CJK characters, collapse binary
+    # noise so marker extraction is deterministic.
+    text = re.sub(r"[^\x09\x0a\x0d\x20-\x7e\u4e00-\u9fff]+", " ", text)
+    return re.sub(r"[ \t]+", " ", text)
+
+
+def antigravity_conversation_step_texts(started_at: float) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for db in recent_antigravity_conversation_dbs(started_at):
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                cur = con.cursor()
+                for idx, step_type, step_payload in cur.execute(
+                    "select idx, step_type, step_payload from steps order by idx asc"
+                ):
+                    # step_type 14 / idx 0 is the user prompt. It often contains
+                    # the expected marker, so never use it as proof of completion.
+                    if int(idx) == 0 or int(step_type) == 14:
+                        continue
+                    text = printable_blob_text(step_payload)
+                    if text.strip():
+                        rows.append({"dbPath": str(db), "idx": idx, "stepType": step_type, "text": text})
+            finally:
+                con.close()
+        except Exception:
+            continue
+    return rows
+
+
+def text_window(text: str, needle: str, before: int = 2500, after: int = 1200) -> str:
+    pos = text.find(needle)
+    if pos < 0:
+        return text[-before:]
+    return text[max(0, pos - before) : min(len(text), pos + len(needle) + after)].strip()
+
+
+def find_antigravity_conversation_token(needle: str, started_at: float) -> dict[str, Any]:
+    for row in antigravity_conversation_step_texts(started_at):
+        text = row["text"]
+        if needle in text:
+            return {
+                "found": True,
+                "source": "antigravity_conversation_db",
+                "dbPath": row["dbPath"],
+                "stepIndex": row["idx"],
+                "stepType": row["stepType"],
+                "textTail": text_window(text, needle)[-1000:],
+            }
+    return {"found": False, "source": "antigravity_conversation_db", "dbPath": None}
+
+
+def recover_antigravity_result_from_conversation_db(
+    result_path: Path, started_at: float, marker: str = ANTIGRAVITY_RESULT_MARKER
+) -> dict[str, Any] | None:
+    hit = find_antigravity_conversation_token(marker, started_at)
+    if not hit.get("found"):
+        return None
+    content = str(hit.get("textTail") or "").strip()
+    if marker not in content:
+        content = f"{content}\n{marker}".strip()
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(content + "\n", encoding="utf-8")
+    ready, text = read_ready_result(result_path)
+    recovered = {"ready": ready, "path": str(result_path), "content": text, "marker": marker}
+    recovered["source"] = "antigravity_conversation_db"
+    recovered["dbPath"] = hit.get("dbPath")
+    recovered["stepIndex"] = hit.get("stepIndex")
+    return recovered
+
+
 def run_antigravity_print_smoke(command: str | None, timeout_sec: int) -> dict[str, Any]:
     if not command:
         return {"ran": False, "passed": False, "reason": "Antigravity command is unavailable."}
@@ -1277,6 +1374,7 @@ def run_antigravity_print_smoke(command: str | None, timeout_sec: int) -> dict[s
     if os.environ.get("ANTIGRAVITY_AGY_SKIP_PERMISSIONS", "1") != "0":
         command_line.append("--dangerously-skip-permissions")
 
+    started_at = time.time()
     try:
         completed = subprocess.run(
             command_line,
@@ -1289,26 +1387,33 @@ def run_antigravity_print_smoke(command: str | None, timeout_sec: int) -> dict[s
             env=antigravity_subprocess_env(command),
         )
     except subprocess.TimeoutExpired as exc:
+        fallback = find_antigravity_conversation_token(expected, started_at)
         return {
             "ran": True,
-            "passed": False,
+            "passed": bool(fallback.get("found")),
             "timedOut": True,
             "timeoutSec": timeout_sec,
             "stdoutNonEmpty": bool((exc.stdout or "").strip()),
             "stderrNonEmpty": bool((exc.stderr or "").strip()),
             "modelNote": agy_model_note,
+            "conversationFallback": fallback,
         }
 
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
+    fallback = {"found": False, "source": "not_needed"}
+    if expected not in stdout:
+        fallback = find_antigravity_conversation_token(expected, started_at)
+    expected_found = expected in stdout or bool(fallback.get("found"))
     return {
         "ran": True,
-        "passed": completed.returncode == 0 and expected in stdout,
+        "passed": completed.returncode == 0 and expected_found,
         "exitCode": completed.returncode,
         "stdoutNonEmpty": bool(stdout.strip()),
         "stderrNonEmpty": bool(stderr.strip()),
-        "expectedTokenFound": expected in stdout,
+        "expectedTokenFound": expected_found,
         "modelNote": agy_model_note,
+        "conversationFallback": fallback,
         "stdoutTail": stdout[-500:],
         "stderrTail": stderr[-500:],
     }
@@ -1429,6 +1534,7 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
             },
         },
     )
+    started_at = time.time()
     try:
         completed = subprocess.run(
             command_line,
@@ -1492,6 +1598,15 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
                 "mailbox or report MCP as the completion signal."
             )
         result_payload = wait_for_result_file(result_path, effective_result_timeout_sec, poll_interval_sec)
+        if not result_payload["ready"] and resolved_style == "agy_print":
+            recovered_payload = recover_antigravity_result_from_conversation_db(result_path, started_at)
+            if recovered_payload is not None:
+                result_payload = recovered_payload
+                run_record["conversationFallback"] = {
+                    "source": "antigravity_conversation_db",
+                    "dbPath": recovered_payload.get("dbPath"),
+                    "stepIndex": recovered_payload.get("stepIndex"),
+                }
         run_record["result"] = result_payload
         if result_payload["ready"]:
             status = "COMPLETED"

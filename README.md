@@ -51,7 +51,9 @@ What is stable today:
   report-only MCP server.
 - `agy --print` stdout is diagnostic only. Planner/tool-call streams may exit
   successfully with empty stdout, so the closed-loop completion signal is the
-  report MCP or result file marker.
+  report MCP or result file marker. When local `agy` drops stdout but records the
+  response in its conversation database, Dev Triangle can recover the completion
+  marker from `%USERPROFILE%\.gemini\antigravity-cli\conversations`.
 - The local ledger records jobs, handoffs, statuses, result paths, and notes.
 - CI validates the MCP protocol on Windows and Ubuntu without needing real
   Jules or Antigravity credentials.
@@ -68,6 +70,8 @@ What is intentionally not claimed:
   choose its own default model.
 - Dev Triangle ignores the legacy unsafe `Gemini 3.5 Flash (Medium)` value even
   if it is inherited from the parent process environment.
+- New installs should not set `ANTIGRAVITY_AGY_MODEL` by default. Leave model
+  choice to `agy` unless a local model label has been verified on that machine.
 - CI uses deterministic fake worker paths. Real local Antigravity validation is
   covered by `scripts/demo-user-flow.ps1` on a machine with `agy` installed.
 

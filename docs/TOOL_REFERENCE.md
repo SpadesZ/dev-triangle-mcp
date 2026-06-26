@@ -248,6 +248,11 @@ with empty stdout, so a failed print smoke does not mean `agy` is missing; it
 means headless completion capture needs the result mailbox/report MCP path.
 If the environment contains the legacy unsafe `Gemini 3.5 Flash (Medium)`
 model value, Dev Triangle ignores it and reports that through `agyModelNote`.
+When stdout is empty but the model response is stored in the Antigravity
+conversation SQLite database, Dev Triangle checks the recent databases under
+`%USERPROFILE%\.gemini\antigravity-cli\conversations` and can mark the smoke
+passed from that fallback. Set `ANTIGRAVITY_AGY_CONVERSATION_DIR` only when a
+test or custom install stores those databases elsewhere.
 
 ### `run_antigravity_handoff`
 
@@ -274,6 +279,10 @@ marker is present.
 If `agy --print` exits 0 but stdout is empty and no result appears, the handoff
 is marked `DEGRADED_NO_RESULT`. Treat stdout as diagnostic only; use
 `complete_dev_triangle_handoff` or the result marker as the completion signal.
+Before returning `DEGRADED_NO_RESULT`, Dev Triangle also checks recent
+Antigravity conversation databases for `DEV_TRIANGLE_RESULT_READY`. If the
+marker is found in a non-user response step, the server writes the recovered
+content to the result path and marks the handoff `COMPLETED`.
 
 ### `antigravity_get_result`
 

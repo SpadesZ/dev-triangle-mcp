@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -104,10 +105,66 @@ def create_empty_antigravity() -> Path:
     return fake_sh
 
 
+def create_empty_antigravity_with_conversation_result() -> Path:
+    TEST_STATE.mkdir(parents=True, exist_ok=True)
+    fake_py = TEST_STATE / "empty_antigravity_with_conversation_result.py"
+    fake_py.write_text(
+        r'''
+from __future__ import annotations
+
+import os
+import re
+import sqlite3
+import sys
+import uuid
+from pathlib import Path
+
+
+prompt = " ".join(sys.argv[1:])
+conversation_dir = Path(os.environ["ANTIGRAVITY_AGY_CONVERSATION_DIR"])
+conversation_dir.mkdir(parents=True, exist_ok=True)
+db_path = conversation_dir / f"{uuid.uuid4()}.db"
+marker = "DEV_TRIANGLE_RESULT_READY"
+result_text = (
+    "status: pass\n"
+    "recommendation: merge\n"
+    "commands run: fake agy sqlite fallback\n"
+    "findings: stdout bridge was empty but Antigravity conversation DB had the final report\n"
+    f"{marker}\n"
+)
+with sqlite3.connect(db_path) as con:
+    con.execute(
+        "create table steps (idx integer, step_type integer, status integer, has_subtrajectory integer, "
+        "metadata blob, error_details blob, permissions blob, task_details blob, render_info blob, "
+        "step_payload blob, step_format integer)"
+    )
+    con.execute(
+        "insert into steps values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (0, 14, 3, 0, b"", None, None, None, None, prompt.encode("utf-8"), 0),
+    )
+    con.execute(
+        "insert into steps values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (1, 15, 3, 0, b"", None, None, None, None, f"bot-result:\n{result_text}".encode("utf-8"), 0),
+    )
+raise SystemExit(0)
+'''.lstrip(),
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        fake_cmd = TEST_STATE / "empty-agy-with-conversation-result.cmd"
+        fake_cmd.write_text(f'@echo off\n"{sys.executable}" "{fake_py}" %*\n', encoding="utf-8")
+        return fake_cmd
+    fake_sh = TEST_STATE / "empty-agy-with-conversation-result"
+    fake_sh.write_text(f'#!/usr/bin/env sh\n"{sys.executable}" "{fake_py}" "$@"\n', encoding="utf-8")
+    fake_sh.chmod(fake_sh.stat().st_mode | stat.S_IEXEC)
+    return fake_sh
+
+
 def main() -> int:
     env = os.environ.copy()
     env["DEV_TRIANGLE_HOME"] = str(TEST_STATE)
     env["ANTIGRAVITY_HANDOFF_DIR"] = str(TEST_STATE / "antigravity-handoffs")
+    env["ANTIGRAVITY_AGY_CONVERSATION_DIR"] = str(TEST_STATE / "antigravity-conversations")
     env["ANTIGRAVITY_AGY_MODEL"] = "Gemini 3.5 Flash (Medium)"
     proc = subprocess.Popen(
         [sys.executable, str(SERVER)],
@@ -352,6 +409,35 @@ def main() -> int:
         assert empty_closed_loop["result"]["isError"] is False
         assert empty_closed_loop["result"]["structuredContent"]["status"] == "DEGRADED_NO_RESULT"
         assert empty_closed_loop["result"]["structuredContent"]["stdoutEmpty"] is True
+
+        empty_db_cmd = create_empty_antigravity_with_conversation_result()
+        db_fallback_closed_loop = rpc(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 102,
+                "method": "tools/call",
+                "params": {
+                    "name": "run_antigravity_handoff",
+                    "arguments": {
+                        "handoff": handoff_id,
+                        "command": str(empty_db_cmd),
+                        "executionStyle": "agy_print",
+                        "waitForResult": True,
+                        "resultTimeoutSec": 10,
+                        "emptyStdoutResultGraceSec": 1,
+                        "pollIntervalSec": 1,
+                    },
+                },
+            },
+        )
+        assert db_fallback_closed_loop["result"]["isError"] is False
+        db_fallback = db_fallback_closed_loop["result"]["structuredContent"]
+        assert db_fallback["status"] == "COMPLETED"
+        assert db_fallback["stdoutEmpty"] is True
+        assert db_fallback["result"]["ready"] is True
+        assert db_fallback["result"]["source"] == "antigravity_conversation_db"
+        assert "fake agy sqlite fallback" in db_fallback["result"]["content"]
 
         direct_submit = rpc(
             proc,
