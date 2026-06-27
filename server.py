@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -53,8 +54,12 @@ HANDOFF_DIR = Path(
 ).expanduser()
 PATCH_DIR = DEV_TRIANGLE_HOME / "patches"
 RESULT_DIR = DEV_TRIANGLE_HOME / "antigravity-results"
+LOG_DIR = DEV_TRIANGLE_HOME / "logs"
 ANTIGRAVITY_DEFAULT_PROMPT_ARG = "-p"
 ANTIGRAVITY_RESULT_MARKER = "DEV_TRIANGLE_RESULT_READY"
+ANTIGRAVITY_LEGACY_UNSAFE_MODELS = {"Gemini 3.5 Flash (Medium)"}
+ANTIGRAVITY_DB_SCAN_LIMIT = 8
+UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
 
 
 class ToolError(Exception):
@@ -70,6 +75,7 @@ def ensure_dirs() -> None:
     HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
     PATCH_DIR.mkdir(parents=True, exist_ok=True)
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
@@ -162,6 +168,13 @@ def wait_for_result_file(path: Path, timeout_sec: int, poll_interval_sec: int) -
         "marker": ANTIGRAVITY_RESULT_MARKER,
         "message": f"Timed out waiting for {ANTIGRAVITY_RESULT_MARKER}.",
     }
+
+
+def ready_result_payload(path: Path) -> dict[str, Any] | None:
+    ready, text = read_ready_result(path)
+    if not ready:
+        return None
+    return {"ready": True, "path": str(path), "content": text, "marker": ANTIGRAVITY_RESULT_MARKER}
 
 
 def require_string(args: dict[str, Any], name: str, max_len: int = 20000) -> str:
@@ -843,6 +856,23 @@ def tool_jules_list_sessions(args: dict[str, Any]) -> dict[str, Any]:
     return {"sessions": payload.get("sessions", []), "nextPageToken": payload.get("nextPageToken")}
 
 
+def jules_default_branch_for_source(source_name: str) -> str | None:
+    page_token: str | None = None
+    for _ in range(10):
+        payload = http_json("GET", "/sources", params={"pageSize": 100, "pageToken": page_token})
+        for source in payload.get("sources", []):
+            if source.get("name") != source_name and source.get("id") != source_name.removeprefix("sources/"):
+                continue
+            github_repo = source.get("githubRepo") or {}
+            default_branch = github_repo.get("defaultBranch") or {}
+            branch = default_branch.get("displayName")
+            return branch if isinstance(branch, str) and branch.strip() else None
+        page_token = payload.get("nextPageToken")
+        if not page_token:
+            break
+    return None
+
+
 def tool_jules_create_session(args: dict[str, Any]) -> dict[str, Any]:
     prompt = require_string(args, "prompt", 40000)
     title = optional_string(args, "title", 200)
@@ -857,9 +887,11 @@ def tool_jules_create_session(args: dict[str, Any]) -> dict[str, Any]:
     if title:
         body["title"] = title
     if source:
-        source_context: dict[str, Any] = {"source": normalize_source(source)}
-        if starting_branch:
-            source_context["githubRepoContext"] = {"startingBranch": starting_branch}
+        normalized_source = normalize_source(source)
+        source_context: dict[str, Any] = {"source": normalized_source}
+        if normalized_source.startswith("sources/github/"):
+            branch = starting_branch or jules_default_branch_for_source(normalized_source) or "main"
+            source_context["githubRepoContext"] = {"startingBranch": branch}
         body["sourceContext"] = source_context
     if automation_mode:
         body["automationMode"] = automation_mode
@@ -1110,15 +1142,21 @@ def resolve_antigravity_command(command_override: str | None = None) -> dict[str
 
 def tool_antigravity_detect_cli(args: dict[str, Any]) -> dict[str, Any]:
     command = optional_string(args, "command", 2000)
+    smoke_print = args.get("smokePrint", False)
+    if not isinstance(smoke_print, bool):
+        raise ToolError("Argument smokePrint must be a boolean.")
+    smoke_timeout_sec = optional_int(args, "smokeTimeoutSec", 30, 5, 120)
     detected = resolve_antigravity_command(command)
     command_kind = antigravity_command_kind(detected["command"])
-    return {
+    agy_model, agy_model_note = configured_antigravity_agy_model()
+    payload = {
         "available": detected["available"],
         "command": detected["command"],
         "commandKind": command_kind,
         "checked": detected["checked"],
         "promptArg": os.environ.get("ANTIGRAVITY_PROMPT_ARG", ANTIGRAVITY_DEFAULT_PROMPT_ARG),
-        "agyModel": os.environ.get("ANTIGRAVITY_AGY_MODEL", "Gemini 3.5 Flash (Medium)"),
+        "agyModel": agy_model,
+        "agyModelNote": agy_model_note,
         "note": (
             "Set ANTIGRAVITY_COMMAND to the full Antigravity CLI path if auto-detection fails."
             if not detected["available"]
@@ -1129,13 +1167,25 @@ def tool_antigravity_detect_cli(args: dict[str, Any]) -> dict[str, Any]:
             )
         ),
     }
+    if smoke_print:
+        payload["printSmoke"] = run_antigravity_print_smoke(detected["command"], smoke_timeout_sec)
+    return payload
+
+
+def configured_antigravity_agy_model() -> tuple[str, str | None]:
+    model = os.environ.get("ANTIGRAVITY_AGY_MODEL", "").strip()
+    if not model:
+        return "", None
+    if model in ANTIGRAVITY_LEGACY_UNSAFE_MODELS:
+        return "", f"Ignored legacy unsafe ANTIGRAVITY_AGY_MODEL value: {model}"
+    return model, None
 
 
 def antigravity_command_kind(command: str | None) -> str:
     if not command:
         return "unknown"
     name = Path(command).name.lower()
-    if name in {"agy", "agy.exe"}:
+    if name in {"agy", "agy.exe", "agy.cmd"}:
         return "agy_cli"
     if "antigravity-ide" in name:
         return "ide_chat"
@@ -1151,6 +1201,8 @@ def build_antigravity_command_line(
     mode: str,
     window_mode: str,
     execution_style: str,
+    workspace_dir: Path | None = None,
+    log_file: Path | None = None,
 ) -> tuple[list[str], str]:
     # NOTE: agy_print is the preferred unattended path. The older
     # antigravity-ide.cmd chat route can launch a UI but did not reliably return
@@ -1166,19 +1218,20 @@ def build_antigravity_command_line(
             style = "prompt_arg"
 
     if style == "agy_print":
-        model = os.environ.get("ANTIGRAVITY_AGY_MODEL", "Gemini 3.5 Flash (Medium)")
+        model, _ = configured_antigravity_agy_model()
         timeout = os.environ.get("ANTIGRAVITY_AGY_PRINT_TIMEOUT", "30m")
-        command_line = [
-            command,
-            "--model",
-            model,
-            "--print",
-            "--print-timeout",
-            timeout,
-        ]
+        command_line = [command]
+        if os.environ.get("ANTIGRAVITY_AGY_NEW_PROJECT", "0") not in {"0", "false", "False"}:
+            command_line.append("--new-project")
+        if model:
+            command_line += ["--model", model]
+        command_line += ["--print", prompt, "--print-timeout", timeout]
         if os.environ.get("ANTIGRAVITY_AGY_SKIP_PERMISSIONS", "1") not in {"0", "false", "False"}:
             command_line.append("--dangerously-skip-permissions")
-        command_line.append(prompt)
+        if workspace_dir is not None:
+            command_line.extend(["--add-dir", str(workspace_dir.resolve())])
+        if log_file is not None:
+            command_line.extend(["--log-file", str(log_file.resolve())])
         return command_line, style
 
     if style == "ide_chat":
@@ -1204,6 +1257,10 @@ def antigravity_subprocess_env(command: str) -> dict[str, str]:
     # agy may need GNU grep on Windows for its internal search steps. Git for
     # Windows commonly provides it, so we prepend that location when present.
     env = os.environ.copy()
+    user_profile = env.get("USERPROFILE", "").strip()
+    home = env.get("HOME", "").strip()
+    if os.name == "nt" and user_profile and (not home or home.startswith("/Users/")):
+        env["HOME"] = user_profile
     extra_paths: list[str] = []
     command_parent = str(Path(command).expanduser().parent)
     if command_parent and command_parent != ".":
@@ -1218,6 +1275,334 @@ def antigravity_subprocess_env(command: str) -> dict[str, str]:
             current_path = item + os.pathsep + current_path
     env["PATH"] = current_path
     return env
+
+
+def antigravity_run_cwd(command: str, repo_path: Path, execution_style: str) -> Path:
+    if (
+        os.name == "nt"
+        and execution_style == "agy_print"
+        and antigravity_command_kind(command) == "agy_cli"
+    ):
+        user_profile = os.environ.get("USERPROFILE", "").strip()
+        if user_profile:
+            profile_path = Path(user_profile).expanduser()
+            if profile_path.exists():
+                # agy currently records some internal paths as /Users/... on
+                # Windows. Running from the profile drive prevents D:\Users
+                # style path resolution while --add-dir keeps the target repo in
+                # the workspace.
+                return profile_path
+    return repo_path.resolve()
+
+
+def antigravity_cli_home() -> Path:
+    configured = os.environ.get("ANTIGRAVITY_CLI_HOME", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    if os.name == "nt":
+        user_profile = os.environ.get("USERPROFILE", "").strip()
+        if user_profile:
+            return Path(user_profile).expanduser() / ".gemini" / "antigravity-cli"
+    return Path.home() / ".gemini" / "antigravity-cli"
+
+
+def antigravity_conversation_ids_from_log(log_path: Path) -> list[str]:
+    if not log_path.exists():
+        return []
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    ids: list[str] = []
+    seen: set[str] = set()
+    for match in UUID_RE.finditer(text):
+        value = match.group(0)
+        if value not in seen:
+            ids.append(value)
+            seen.add(value)
+    return ids
+
+
+def antigravity_recent_transcripts(started_at: float, log_path: Path | None = None) -> list[Path]:
+    cli_home = antigravity_cli_home()
+    brain_dir = cli_home / "brain"
+    paths: list[Path] = []
+    seen: set[Path] = set()
+
+    conversation_ids = antigravity_conversation_ids_from_log(log_path) if log_path else []
+    for conversation_id in reversed(conversation_ids):
+        logs_dir = brain_dir / conversation_id / ".system_generated" / "logs"
+        for name in ("transcript_full.jsonl", "transcript.jsonl"):
+            path = logs_dir / name
+            if path.exists() and path not in seen:
+                paths.append(path)
+                seen.add(path)
+    if log_path is not None:
+        return paths
+
+    if brain_dir.exists():
+        for conversation_dir in sorted(brain_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if not conversation_dir.is_dir():
+                continue
+            try:
+                if conversation_dir.stat().st_mtime < started_at - 5:
+                    break
+            except OSError:
+                continue
+            logs_dir = conversation_dir / ".system_generated" / "logs"
+            for name in ("transcript_full.jsonl", "transcript.jsonl"):
+                path = logs_dir / name
+                if path.exists() and path not in seen:
+                    paths.append(path)
+                    seen.add(path)
+    return paths
+
+
+def latest_model_content_from_transcripts(paths: list[Path]) -> dict[str, Any] | None:
+    latest: dict[str, Any] | None = None
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if item.get("source") != "MODEL" or not isinstance(item.get("content"), str):
+                continue
+            step_index = item.get("step_index")
+            score = int(step_index) if isinstance(step_index, int) else -1
+            candidate = {
+                "content": item["content"],
+                "transcriptPath": str(path),
+                "stepIndex": step_index,
+                "score": score,
+            }
+            if latest is None or score >= int(latest.get("score", -1)):
+                latest = candidate
+    return latest
+
+
+def recover_result_from_antigravity_transcript(
+    result_path: Path,
+    started_at: float,
+    log_path: Path | None,
+) -> dict[str, Any] | None:
+    latest = latest_model_content_from_transcripts(antigravity_recent_transcripts(started_at, log_path))
+    if latest is None:
+        return None
+    content = latest["content"]
+    ready = ANTIGRAVITY_RESULT_MARKER in content
+    payload: dict[str, Any] = {
+        "ready": ready,
+        "path": str(result_path),
+        "marker": ANTIGRAVITY_RESULT_MARKER,
+        "source": "antigravity_transcript",
+        "transcriptPath": latest["transcriptPath"],
+        "stepIndex": latest["stepIndex"],
+    }
+    if ready:
+        result_path.write_text(content, encoding="utf-8")
+        payload["content"] = content
+    else:
+        payload["contentTail"] = content[-4000:]
+        payload["message"] = "Recovered latest Antigravity model response from transcript, but result marker was absent."
+    return payload
+
+
+def find_antigravity_transcript_token(
+    needle: str,
+    started_at: float,
+    log_path: Path | None,
+) -> dict[str, Any]:
+    latest = latest_model_content_from_transcripts(antigravity_recent_transcripts(started_at, log_path))
+    if latest is None or needle not in latest["content"]:
+        return {"found": False, "source": "antigravity_transcript", "transcriptPath": None}
+    return {
+        "found": True,
+        "source": "antigravity_transcript",
+        "transcriptPath": latest["transcriptPath"],
+        "stepIndex": latest["stepIndex"],
+        "textTail": latest["content"][-1000:],
+    }
+
+
+def antigravity_conversation_dir() -> Path:
+    override = os.environ.get("ANTIGRAVITY_AGY_CONVERSATION_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".gemini" / "antigravity-cli" / "conversations"
+
+
+def recent_antigravity_conversation_dbs(started_at: float, limit: int = ANTIGRAVITY_DB_SCAN_LIMIT) -> list[Path]:
+    conversation_dir = antigravity_conversation_dir()
+    if not conversation_dir.exists():
+        return []
+    dbs = sorted(conversation_dir.glob("*.db"), key=lambda item: item.stat().st_mtime, reverse=True)
+    recent = [db for db in dbs if db.stat().st_mtime >= started_at - 5]
+    return (recent or dbs)[:limit]
+
+
+def printable_blob_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="ignore")
+    else:
+        text = str(value)
+    # The Antigravity SQLite payloads are protobuf-ish blobs with useful UTF-8
+    # fragments. Keep printable text and common CJK characters, collapse binary
+    # noise so marker extraction is deterministic.
+    text = re.sub(r"[^\x09\x0a\x0d\x20-\x7e\u4e00-\u9fff]+", " ", text)
+    return re.sub(r"[ \t]+", " ", text)
+
+
+def antigravity_conversation_step_texts(started_at: float) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for db in recent_antigravity_conversation_dbs(started_at):
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                cur = con.cursor()
+                for idx, step_type, step_payload in cur.execute(
+                    "select idx, step_type, step_payload from steps order by idx asc"
+                ):
+                    # step_type 14 / idx 0 is the user prompt. It often contains
+                    # the expected marker, so never use it as proof of completion.
+                    if int(idx) == 0 or int(step_type) == 14:
+                        continue
+                    text = printable_blob_text(step_payload)
+                    if text.strip():
+                        rows.append({"dbPath": str(db), "idx": idx, "stepType": step_type, "text": text})
+            finally:
+                con.close()
+        except Exception:
+            continue
+    return rows
+
+
+def text_window(text: str, needle: str, before: int = 2500, after: int = 1200) -> str:
+    pos = text.find(needle)
+    if pos < 0:
+        return text[-before:]
+    return text[max(0, pos - before) : min(len(text), pos + len(needle) + after)].strip()
+
+
+def find_antigravity_conversation_token(needle: str, started_at: float) -> dict[str, Any]:
+    for row in antigravity_conversation_step_texts(started_at):
+        text = row["text"]
+        if needle in text:
+            return {
+                "found": True,
+                "source": "antigravity_conversation_db",
+                "dbPath": row["dbPath"],
+                "stepIndex": row["idx"],
+                "stepType": row["stepType"],
+                "textTail": text_window(text, needle)[-1000:],
+            }
+    return {"found": False, "source": "antigravity_conversation_db", "dbPath": None}
+
+
+def recover_antigravity_result_from_conversation_db(
+    result_path: Path, started_at: float, marker: str = ANTIGRAVITY_RESULT_MARKER
+) -> dict[str, Any] | None:
+    hit = find_antigravity_conversation_token(marker, started_at)
+    if not hit.get("found"):
+        return None
+    content = str(hit.get("textTail") or "").strip()
+    if marker not in content:
+        content = f"{content}\n{marker}".strip()
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(content + "\n", encoding="utf-8")
+    ready, text = read_ready_result(result_path)
+    recovered = {"ready": ready, "path": str(result_path), "content": text, "marker": marker}
+    recovered["source"] = "antigravity_conversation_db"
+    recovered["dbPath"] = hit.get("dbPath")
+    recovered["stepIndex"] = hit.get("stepIndex")
+    return recovered
+
+
+def run_antigravity_print_smoke(command: str | None, timeout_sec: int) -> dict[str, Any]:
+    if not command:
+        return {"ran": False, "passed": False, "reason": "Antigravity command is unavailable."}
+    if antigravity_command_kind(command) != "agy_cli":
+        return {"ran": False, "passed": False, "reason": "Print smoke only supports agy CLI."}
+
+    expected = "DEV_TRIANGLE_AGY_SMOKE_OK"
+    command_line: list[str] = [command]
+    if os.environ.get("ANTIGRAVITY_AGY_NEW_PROJECT", "0") not in {"0", "false", "False"}:
+        command_line.append("--new-project")
+    agy_model, agy_model_note = configured_antigravity_agy_model()
+    if agy_model:
+        command_line += ["--model", agy_model]
+    command_line += [
+        "--print",
+        f"Reply with exactly: {expected}",
+        "--print-timeout",
+        f"{timeout_sec}s",
+    ]
+    if os.environ.get("ANTIGRAVITY_AGY_SKIP_PERMISSIONS", "1") != "0":
+        command_line.append("--dangerously-skip-permissions")
+    run_log_path = LOG_DIR / f"antigravity-smoke-{uuid.uuid4().hex[:8]}.log"
+    command_line += ["--log-file", str(run_log_path.resolve())]
+    run_cwd = antigravity_run_cwd(command, ROOT, "agy_print")
+
+    started_at = time.time()
+    try:
+        completed = subprocess.run(
+            command_line,
+            cwd=str(run_cwd.resolve()),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_sec + 15,
+            env=antigravity_subprocess_env(command),
+        )
+    except subprocess.TimeoutExpired as exc:
+        transcript_fallback = find_antigravity_transcript_token(expected, started_at, run_log_path)
+        fallback = (
+            transcript_fallback
+            if transcript_fallback.get("found")
+            else find_antigravity_conversation_token(expected, started_at)
+        )
+        return {
+            "ran": True,
+            "passed": bool(fallback.get("found")),
+            "timedOut": True,
+            "timeoutSec": timeout_sec,
+            "runCwd": str(run_cwd.resolve()),
+            "logPath": str(run_log_path),
+            "stdoutNonEmpty": bool((exc.stdout or "").strip()),
+            "stderrNonEmpty": bool((exc.stderr or "").strip()),
+            "modelNote": agy_model_note,
+            "conversationFallback": fallback,
+        }
+
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+    fallback = {"found": False, "source": "not_needed"}
+    if expected not in stdout:
+        transcript_fallback = find_antigravity_transcript_token(expected, started_at, run_log_path)
+        fallback = (
+            transcript_fallback
+            if transcript_fallback.get("found")
+            else find_antigravity_conversation_token(expected, started_at)
+        )
+    expected_found = expected in stdout or bool(fallback.get("found"))
+    return {
+        "ran": True,
+        "passed": completed.returncode == 0 and expected_found,
+        "exitCode": completed.returncode,
+        "runCwd": str(run_cwd.resolve()),
+        "logPath": str(run_log_path),
+        "stdoutNonEmpty": bool(stdout.strip()),
+        "stderrNonEmpty": bool(stderr.strip()),
+        "expectedTokenFound": expected_found,
+        "modelNote": agy_model_note,
+        "conversationFallback": fallback,
+        "stdoutTail": stdout[-500:],
+        "stderrTail": stderr[-500:],
+    }
 
 
 def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
@@ -1240,6 +1625,7 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
     )
     timeout_sec = optional_int(args, "timeoutSec", 1800, 30, 14400)
     result_timeout_sec = optional_int(args, "resultTimeoutSec", 1800, 10, 14400)
+    empty_stdout_result_grace_sec = optional_int(args, "emptyStdoutResultGraceSec", 15, 1, 300)
     poll_interval_sec = optional_int(args, "pollIntervalSec", 5, 1, 120)
     result_path_arg = optional_string(args, "resultPath", 2000)
     dry_run = args.get("dryRun", False)
@@ -1277,6 +1663,8 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
     )
     detected = resolve_antigravity_command(command)
     resolved_command = detected["command"] or (command or "antigravity")
+    handoff_slug = sanitize_filename(str(handoff.get("id") or "handoff"), "handoff")
+    run_log_path = LOG_DIR / f"antigravity-{handoff_slug}-{uuid.uuid4().hex[:8]}.log"
     command_line, resolved_style = build_antigravity_command_line(
         resolved_command,
         prompt,
@@ -1284,15 +1672,20 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
         mode,
         window_mode,
         execution_style,
+        workspace_dir=repo_path,
+        log_file=run_log_path,
     )
+    run_cwd = antigravity_run_cwd(resolved_command, repo_path, resolved_style)
 
     if dry_run:
         return {
             "handoff": handoff,
             "repoPath": str(repo_path.resolve()),
+            "runCwd": str(run_cwd.resolve()),
             "available": detected["available"],
             "checked": detected["checked"],
             "commandLine": command_line,
+            "logPath": str(run_log_path),
             "commandKind": antigravity_command_kind(detected["command"]),
             "executionStyle": resolved_style,
             "completionCapture": resolved_style != "ide_chat",
@@ -1329,15 +1722,18 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
                 "at": now_iso(),
                 "commandLine": command_line,
                 "repoPath": str(repo_path),
+                "runCwd": str(run_cwd.resolve()),
+                "logPath": str(run_log_path),
                 "resultPath": str(result_path),
                 "waitForResult": wait_for_result,
             },
         },
     )
+    started_at = time.time()
     try:
         completed = subprocess.run(
             command_line,
-            cwd=str(repo_path.resolve()),
+            cwd=str(run_cwd.resolve()),
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -1346,19 +1742,67 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
             env=antigravity_subprocess_env(resolved_command),
         )
     except subprocess.TimeoutExpired as exc:
+        stdout_tail = (exc.stdout or "")[-4000:]
+        stderr_tail = (exc.stderr or "")[-4000:]
+        timeout_record: dict[str, Any] = {
+            "at": now_iso(),
+            "commandLine": command_line,
+            "repoPath": str(repo_path.resolve()),
+            "runCwd": str(run_cwd.resolve()),
+            "logPath": str(run_log_path),
+            "timeoutSec": timeout_sec,
+            "resultPath": str(result_path),
+            "stdout": stdout_tail,
+            "stderr": stderr_tail,
+        }
+        result_payload = ready_result_payload(result_path)
+        if result_payload is None and resolved_style == "agy_print":
+            result_payload = recover_result_from_antigravity_transcript(result_path, started_at, run_log_path)
+            if result_payload is not None:
+                timeout_record["transcriptFallback"] = {
+                    "source": result_payload.get("source"),
+                    "ready": result_payload.get("ready"),
+                    "transcriptPath": result_payload.get("transcriptPath"),
+                    "stepIndex": result_payload.get("stepIndex"),
+                }
+        if (result_payload is None or not result_payload["ready"]) and resolved_style == "agy_print":
+            recovered_payload = recover_antigravity_result_from_conversation_db(result_path, started_at)
+            if recovered_payload is not None:
+                result_payload = recovered_payload
+                timeout_record["conversationFallback"] = {
+                    "source": "antigravity_conversation_db",
+                    "dbPath": recovered_payload.get("dbPath"),
+                    "stepIndex": recovered_payload.get("stepIndex"),
+                }
+        if result_payload is not None:
+            timeout_record["result"] = result_payload
+        if result_payload is not None and result_payload["ready"]:
+            updated = update_handoff(
+                handoff.get("id"),
+                {"status": "COMPLETED", "lastRun": timeout_record},
+            )
+            return {
+                "handoff": updated or handoff,
+                "status": "COMPLETED",
+                "timedOut": True,
+                "exitCode": None,
+                "executionStyle": resolved_style,
+                "completionCapture": resolved_style != "ide_chat",
+                "waitForResult": wait_for_result,
+                "resultPath": str(result_path),
+                "runCwd": str(run_cwd.resolve()),
+                "logPath": str(run_log_path),
+                "stdoutEmpty": not bool(str(stdout_tail).strip()),
+                "stderrEmpty": not bool(str(stderr_tail).strip()),
+                "stdoutTail": stdout_tail,
+                "stderrTail": stderr_tail,
+                "result": result_payload,
+            }
         update_handoff(
             handoff.get("id"),
             {
                 "status": "TIMED_OUT",
-                "lastRun": {
-                    "at": now_iso(),
-                    "commandLine": command_line,
-                    "repoPath": str(repo_path.resolve()),
-                    "timeoutSec": timeout_sec,
-                    "resultPath": str(result_path),
-                    "stdout": (exc.stdout or "")[-4000:],
-                    "stderr": (exc.stderr or "")[-4000:],
-                },
+                "lastRun": timeout_record,
             },
         )
         raise ToolError(f"Antigravity handoff timed out after {timeout_sec} seconds.")
@@ -1367,23 +1811,80 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
         status = "LAUNCHED"
     else:
         status = "COMPLETED" if completed.returncode == 0 else "FAILED"
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+    stdout_empty = not stdout.strip()
+    stderr_empty = not stderr.strip()
     run_record = {
         "at": now_iso(),
         "commandLine": command_line,
         "repoPath": str(repo_path.resolve()),
+        "runCwd": str(run_cwd.resolve()),
+        "logPath": str(run_log_path),
         "executionStyle": resolved_style,
         "completionCapture": resolved_style != "ide_chat",
         "waitForResult": wait_for_result,
         "resultPath": str(result_path),
         "exitCode": completed.returncode,
-        "stdoutTail": completed.stdout[-4000:],
-        "stderrTail": completed.stderr[-4000:],
+        "stdoutEmpty": stdout_empty,
+        "stderrEmpty": stderr_empty,
+        "stdoutTail": stdout[-4000:],
+        "stderrTail": stderr[-4000:],
     }
     result_payload: dict[str, Any] | None = None
     if completed.returncode == 0 and wait_for_result:
-        result_payload = wait_for_result_file(result_path, result_timeout_sec, poll_interval_sec)
+        result_payload = ready_result_payload(result_path)
+        if result_payload is None and resolved_style == "agy_print":
+            result_payload = recover_result_from_antigravity_transcript(result_path, started_at, run_log_path)
+            if result_payload is not None:
+                run_record["transcriptFallback"] = {
+                    "source": result_payload.get("source"),
+                    "ready": result_payload.get("ready"),
+                    "transcriptPath": result_payload.get("transcriptPath"),
+                    "stepIndex": result_payload.get("stepIndex"),
+                }
+        effective_result_timeout_sec = result_timeout_sec
+        if (
+            (result_payload is None or not result_payload["ready"])
+            and resolved_style == "agy_print"
+            and stdout_empty
+            and not result_path.exists()
+        ):
+            effective_result_timeout_sec = min(result_timeout_sec, empty_stdout_result_grace_sec)
+            run_record["emptyStdoutResultGraceSec"] = effective_result_timeout_sec
+            run_record["diagnostic"] = (
+                "agy --print exited 0 with empty stdout and no result file. agy print mode can stream "
+                "planner/tool-call events without emitting a final printable response; use the result "
+                "mailbox or report MCP as the completion signal."
+            )
+        if result_payload is None or not result_payload["ready"]:
+            result_payload = wait_for_result_file(result_path, effective_result_timeout_sec, poll_interval_sec)
+        if not result_payload["ready"] and resolved_style == "agy_print":
+            transcript_payload = recover_result_from_antigravity_transcript(result_path, started_at, run_log_path)
+            if transcript_payload is not None:
+                result_payload = transcript_payload
+                run_record["transcriptFallback"] = {
+                    "source": result_payload.get("source"),
+                    "ready": result_payload.get("ready"),
+                    "transcriptPath": result_payload.get("transcriptPath"),
+                    "stepIndex": result_payload.get("stepIndex"),
+                }
+        if not result_payload["ready"] and resolved_style == "agy_print":
+            recovered_payload = recover_antigravity_result_from_conversation_db(result_path, started_at)
+            if recovered_payload is not None:
+                result_payload = recovered_payload
+                run_record["conversationFallback"] = {
+                    "source": "antigravity_conversation_db",
+                    "dbPath": recovered_payload.get("dbPath"),
+                    "stepIndex": recovered_payload.get("stepIndex"),
+                }
         run_record["result"] = result_payload
-        status = "COMPLETED" if result_payload["ready"] else "AWAITING_RESULT"
+        if result_payload["ready"]:
+            status = "COMPLETED"
+        elif resolved_style == "agy_print" and stdout_empty:
+            status = "DEGRADED_NO_RESULT"
+        else:
+            status = "AWAITING_RESULT"
 
     updated = update_handoff(handoff.get("id"), {"status": status, "lastRun": run_record})
     response = {
@@ -1394,8 +1895,12 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
         "completionCapture": resolved_style != "ide_chat",
         "waitForResult": wait_for_result,
         "resultPath": str(result_path),
-        "stdoutTail": completed.stdout[-4000:],
-        "stderrTail": completed.stderr[-4000:],
+        "runCwd": str(run_cwd.resolve()),
+        "logPath": str(run_log_path),
+        "stdoutEmpty": stdout_empty,
+        "stderrEmpty": stderr_empty,
+        "stdoutTail": stdout[-4000:],
+        "stderrTail": stderr[-4000:],
     }
     if result_payload is not None:
         response["result"] = result_payload
@@ -1500,6 +2005,10 @@ def tool_mcp_health_check(args: dict[str, Any]) -> dict[str, Any]:
     include_jules = args.get("includeJules", False)
     if not isinstance(include_jules, bool):
         raise ToolError("Argument includeJules must be a boolean.")
+    include_antigravity_print_smoke = args.get("includeAntigravityPrintSmoke", False)
+    if not isinstance(include_antigravity_print_smoke, bool):
+        raise ToolError("Argument includeAntigravityPrintSmoke must be a boolean.")
+    antigravity_smoke_timeout_sec = optional_int(args, "antigravitySmokeTimeoutSec", 30, 5, 120)
     antigravity = resolve_antigravity_command(optional_string(args, "antigravityCommand", 2000))
     payload: dict[str, Any] = {
         "server": {"name": SERVER_NAME, "version": SERVER_VERSION, "protocolVersion": PROTOCOL_VERSION},
@@ -1533,6 +2042,11 @@ def tool_mcp_health_check(args: dict[str, Any]) -> dict[str, Any]:
         except ToolError as exc:
             payload["jules"]["reachable"] = False
             payload["jules"]["error"] = str(exc)
+    if include_antigravity_print_smoke:
+        payload["antigravity"]["printSmoke"] = run_antigravity_print_smoke(
+            antigravity["command"],
+            antigravity_smoke_timeout_sec,
+        )
     return payload
 
 
@@ -1723,7 +2237,13 @@ TOOLS = [
         "name": "antigravity_detect_cli",
         "title": "Detect Antigravity CLI",
         "description": "Detect whether an Antigravity CLI command is available for non-interactive handoff execution.",
-        "inputSchema": schema({"command": {"type": "string", "description": "Optional executable path or command name."}}),
+        "inputSchema": schema(
+            {
+                "command": {"type": "string", "description": "Optional executable path or command name."},
+                "smokePrint": {"type": "boolean", "default": False},
+                "smokeTimeoutSec": {"type": "integer", "minimum": 5, "maximum": 120, "default": 30},
+            }
+        ),
     },
     {
         "name": "run_antigravity_handoff",
@@ -1746,6 +2266,13 @@ TOOLS = [
                 "waitForResult": {"type": "boolean", "default": False},
                 "resultPath": {"type": "string", "description": "Optional result report path under the configured result directory."},
                 "resultTimeoutSec": {"type": "integer", "minimum": 10, "maximum": 14400, "default": 1800},
+                "emptyStdoutResultGraceSec": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 300,
+                    "default": 15,
+                    "description": "Short grace wait when agy --print exits 0 with empty stdout and no result file.",
+                },
                 "pollIntervalSec": {"type": "integer", "minimum": 1, "maximum": 120, "default": 5},
                 "dryRun": {"type": "boolean", "default": False},
             },
@@ -1791,6 +2318,8 @@ TOOLS = [
             {
                 "includeJules": {"type": "boolean", "default": False},
                 "antigravityCommand": {"type": "string"},
+                "includeAntigravityPrintSmoke": {"type": "boolean", "default": False},
+                "antigravitySmokeTimeoutSec": {"type": "integer", "minimum": 5, "maximum": 120, "default": 30},
             }
         ),
     },

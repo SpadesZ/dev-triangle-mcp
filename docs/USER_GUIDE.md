@@ -184,6 +184,8 @@ sequenceDiagram
   MCP->>AG: agy --print with handoff prompt
   AG->>Report: complete_dev_triangle_handoff
   Report->>Ledger: write result markdown + update status
+  AG-->>MCP: stdout may be empty
+  MCP->>Ledger: recover marker from Antigravity conversation DB if needed
   Codex->>MCP: antigravity_get_result
   MCP->>Codex: status, result path, report content
   Codex->>User: final explanation
@@ -288,6 +290,10 @@ Then check the result directory:
 
 If a handoff is stuck at `AWAITING_RESULT`, the worker launched but did not
 write the result marker. See [Troubleshooting](TROUBLESHOOTING.md).
+
+If `agy --print` exits with empty stdout, do not treat stdout as the source of
+truth. The handoff is complete only when the report MCP, result file marker, or
+recoverable Antigravity conversation DB marker proves completion.
 
 ## Human Expectations
 
