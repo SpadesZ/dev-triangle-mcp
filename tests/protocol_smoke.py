@@ -105,6 +105,68 @@ def create_empty_antigravity() -> Path:
     return fake_sh
 
 
+def create_fake_agy_transcript() -> Path:
+    TEST_STATE.mkdir(parents=True, exist_ok=True)
+    fake_py = TEST_STATE / "fake_agy_transcript.py"
+    fake_py.write_text(
+        r'''
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+
+args = sys.argv[1:]
+log_path = None
+for index, arg in enumerate(args):
+    if arg == "--log-file" and index + 1 < len(args):
+        log_path = Path(args[index + 1])
+        break
+
+conversation_id = "11111111-2222-3333-4444-555555555555"
+if log_path is not None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(f"conversation {conversation_id}\n", encoding="utf-8")
+
+home = Path(os.environ["ANTIGRAVITY_CLI_HOME"])
+transcript = home / "brain" / conversation_id / ".system_generated" / "logs" / "transcript.jsonl"
+transcript.parent.mkdir(parents=True, exist_ok=True)
+content = (
+    "status: pass\n"
+    "recommendation: merge\n"
+    "commands run: fake agy transcript smoke\n"
+    "findings: transcript fallback recovered the result\n"
+    "DEV_TRIANGLE_RESULT_READY\n"
+)
+transcript.write_text(
+    json.dumps(
+        {
+            "step_index": 0,
+            "source": "MODEL",
+            "type": "PLANNER_RESPONSE",
+            "status": "DONE",
+            "content": content,
+        }
+    )
+    + "\n",
+    encoding="utf-8",
+)
+raise SystemExit(0)
+'''.lstrip(),
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        fake_cmd = TEST_STATE / "agy.cmd"
+        fake_cmd.write_text(f'@echo off\n"{sys.executable}" "{fake_py}" %*\n', encoding="utf-8")
+        return fake_cmd
+    fake_sh = TEST_STATE / "agy"
+    fake_sh.write_text(f'#!/usr/bin/env sh\n"{sys.executable}" "{fake_py}" "$@"\n', encoding="utf-8")
+    fake_sh.chmod(fake_sh.stat().st_mode | stat.S_IEXEC)
+    return fake_sh
+
+
 def create_empty_antigravity_with_conversation_result() -> Path:
     TEST_STATE.mkdir(parents=True, exist_ok=True)
     fake_py = TEST_STATE / "empty_antigravity_with_conversation_result.py"
@@ -164,6 +226,7 @@ def main() -> int:
     env = os.environ.copy()
     env["DEV_TRIANGLE_HOME"] = str(TEST_STATE)
     env["ANTIGRAVITY_HANDOFF_DIR"] = str(TEST_STATE / "antigravity-handoffs")
+    env["ANTIGRAVITY_CLI_HOME"] = str(TEST_STATE / "antigravity-cli-home")
     env["ANTIGRAVITY_AGY_CONVERSATION_DIR"] = str(TEST_STATE / "antigravity-conversations")
     env["ANTIGRAVITY_AGY_MODEL"] = "Gemini 3.5 Flash (Medium)"
     proc = subprocess.Popen(
@@ -322,6 +385,8 @@ def main() -> int:
         assert agy_dry_run["result"]["isError"] is False
         agy_command = agy_dry_run["result"]["structuredContent"]["commandLine"]
         assert "--model" not in agy_command
+        assert "--add-dir" in agy_command
+        assert "--log-file" in agy_command
         print_idx = agy_command.index("--print")
         assert agy_command[print_idx + 1].startswith("Use the handoff at ")
         assert agy_command[print_idx + 2] == "--print-timeout"
@@ -368,6 +433,35 @@ def main() -> int:
         assert closed_loop["result"]["structuredContent"]["status"] == "COMPLETED"
         assert closed_loop["result"]["structuredContent"]["result"]["ready"] is True
         assert "recommendation: merge" in closed_loop["result"]["structuredContent"]["result"]["content"]
+
+        fake_agy = create_fake_agy_transcript()
+        agy_transcript = rpc(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 103,
+                "method": "tools/call",
+                "params": {
+                    "name": "run_antigravity_handoff",
+                    "arguments": {
+                        "handoff": handoff_id,
+                        "command": str(fake_agy),
+                        "executionStyle": "agy_print",
+                        "waitForResult": True,
+                        "resultTimeoutSec": 10,
+                        "emptyStdoutResultGraceSec": 1,
+                        "pollIntervalSec": 1,
+                    },
+                },
+            },
+        )
+        assert agy_transcript["result"]["isError"] is False
+        agy_payload = agy_transcript["result"]["structuredContent"]
+        assert agy_payload["status"] == "COMPLETED"
+        assert agy_payload["stdoutEmpty"] is True
+        assert agy_payload["result"]["ready"] is True
+        assert agy_payload["result"]["source"] == "antigravity_transcript"
+        assert "transcript fallback recovered" in agy_payload["result"]["content"]
 
         get_result = rpc(
             proc,
