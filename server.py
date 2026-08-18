@@ -53,8 +53,10 @@ HANDOFF_DIR = Path(
 ).expanduser()
 PATCH_DIR = DEV_TRIANGLE_HOME / "patches"
 RESULT_DIR = DEV_TRIANGLE_HOME / "antigravity-results"
+LOG_DIR = DEV_TRIANGLE_HOME / "logs"
 ANTIGRAVITY_DEFAULT_PROMPT_ARG = "-p"
 ANTIGRAVITY_RESULT_MARKER = "DEV_TRIANGLE_RESULT_READY"
+UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
 
 
 class ToolError(Exception):
@@ -70,6 +72,7 @@ def ensure_dirs() -> None:
     HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
     PATCH_DIR.mkdir(parents=True, exist_ok=True)
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
@@ -162,6 +165,13 @@ def wait_for_result_file(path: Path, timeout_sec: int, poll_interval_sec: int) -
         "marker": ANTIGRAVITY_RESULT_MARKER,
         "message": f"Timed out waiting for {ANTIGRAVITY_RESULT_MARKER}.",
     }
+
+
+def ready_result_payload(path: Path) -> dict[str, Any] | None:
+    ready, text = read_ready_result(path)
+    if not ready:
+        return None
+    return {"ready": True, "path": str(path), "content": text, "marker": ANTIGRAVITY_RESULT_MARKER}
 
 
 def require_string(args: dict[str, Any], name: str, max_len: int = 20000) -> str:
@@ -1151,6 +1161,8 @@ def build_antigravity_command_line(
     mode: str,
     window_mode: str,
     execution_style: str,
+    workspace_dir: Path | None = None,
+    log_file: Path | None = None,
 ) -> tuple[list[str], str]:
     # NOTE: agy_print is the preferred unattended path. The older
     # antigravity-ide.cmd chat route can launch a UI but did not reliably return
@@ -1178,6 +1190,10 @@ def build_antigravity_command_line(
         ]
         if os.environ.get("ANTIGRAVITY_AGY_SKIP_PERMISSIONS", "1") not in {"0", "false", "False"}:
             command_line.append("--dangerously-skip-permissions")
+        if workspace_dir is not None:
+            command_line.extend(["--add-dir", str(workspace_dir.resolve())])
+        if log_file is not None:
+            command_line.extend(["--log-file", str(log_file.resolve())])
         command_line.append(prompt)
         return command_line, style
 
@@ -1204,6 +1220,10 @@ def antigravity_subprocess_env(command: str) -> dict[str, str]:
     # agy may need GNU grep on Windows for its internal search steps. Git for
     # Windows commonly provides it, so we prepend that location when present.
     env = os.environ.copy()
+    user_profile = env.get("USERPROFILE", "").strip()
+    home = env.get("HOME", "").strip()
+    if os.name == "nt" and user_profile and (not home or home.startswith("/Users/")):
+        env["HOME"] = user_profile
     extra_paths: list[str] = []
     command_parent = str(Path(command).expanduser().parent)
     if command_parent and command_parent != ".":
@@ -1218,6 +1238,136 @@ def antigravity_subprocess_env(command: str) -> dict[str, str]:
             current_path = item + os.pathsep + current_path
     env["PATH"] = current_path
     return env
+
+
+def antigravity_run_cwd(command: str, repo_path: Path, execution_style: str) -> Path:
+    if (
+        os.name == "nt"
+        and execution_style == "agy_print"
+        and antigravity_command_kind(command) == "agy_cli"
+    ):
+        user_profile = os.environ.get("USERPROFILE", "").strip()
+        if user_profile:
+            profile_path = Path(user_profile).expanduser()
+            if profile_path.exists():
+                # agy currently records some internal paths as /Users/... on
+                # Windows. Running from the profile drive prevents D:\Users
+                # style path resolution while --add-dir keeps the target repo in
+                # the workspace.
+                return profile_path
+    return repo_path.resolve()
+
+
+def antigravity_cli_home() -> Path:
+    configured = os.environ.get("ANTIGRAVITY_CLI_HOME", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    if os.name == "nt":
+        user_profile = os.environ.get("USERPROFILE", "").strip()
+        if user_profile:
+            return Path(user_profile).expanduser() / ".gemini" / "antigravity-cli"
+    return Path.home() / ".gemini" / "antigravity-cli"
+
+
+def antigravity_conversation_ids_from_log(log_path: Path) -> list[str]:
+    if not log_path.exists():
+        return []
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    ids: list[str] = []
+    seen: set[str] = set()
+    for match in UUID_RE.finditer(text):
+        value = match.group(0)
+        if value not in seen:
+            ids.append(value)
+            seen.add(value)
+    return ids
+
+
+def antigravity_recent_transcripts(started_at: float, log_path: Path | None = None) -> list[Path]:
+    cli_home = antigravity_cli_home()
+    brain_dir = cli_home / "brain"
+    paths: list[Path] = []
+    seen: set[Path] = set()
+
+    conversation_ids = antigravity_conversation_ids_from_log(log_path) if log_path else []
+    for conversation_id in reversed(conversation_ids):
+        logs_dir = brain_dir / conversation_id / ".system_generated" / "logs"
+        for name in ("transcript_full.jsonl", "transcript.jsonl"):
+            path = logs_dir / name
+            if path.exists() and path not in seen:
+                paths.append(path)
+                seen.add(path)
+
+    if brain_dir.exists():
+        for conversation_dir in sorted(brain_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if not conversation_dir.is_dir():
+                continue
+            try:
+                if conversation_dir.stat().st_mtime < started_at - 5:
+                    break
+            except OSError:
+                continue
+            logs_dir = conversation_dir / ".system_generated" / "logs"
+            for name in ("transcript_full.jsonl", "transcript.jsonl"):
+                path = logs_dir / name
+                if path.exists() and path not in seen:
+                    paths.append(path)
+                    seen.add(path)
+    return paths
+
+
+def latest_model_content_from_transcripts(paths: list[Path]) -> dict[str, Any] | None:
+    latest: dict[str, Any] | None = None
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if item.get("source") != "MODEL" or not isinstance(item.get("content"), str):
+                continue
+            step_index = item.get("step_index")
+            score = int(step_index) if isinstance(step_index, int) else -1
+            candidate = {
+                "content": item["content"],
+                "transcriptPath": str(path),
+                "stepIndex": step_index,
+                "score": score,
+            }
+            if latest is None or score >= int(latest.get("score", -1)):
+                latest = candidate
+    return latest
+
+
+def recover_result_from_antigravity_transcript(
+    result_path: Path,
+    started_at: float,
+    log_path: Path | None,
+) -> dict[str, Any] | None:
+    latest = latest_model_content_from_transcripts(antigravity_recent_transcripts(started_at, log_path))
+    if latest is None:
+        return None
+    content = latest["content"]
+    ready = ANTIGRAVITY_RESULT_MARKER in content
+    payload: dict[str, Any] = {
+        "ready": ready,
+        "path": str(result_path),
+        "marker": ANTIGRAVITY_RESULT_MARKER,
+        "source": "antigravity_transcript",
+        "transcriptPath": latest["transcriptPath"],
+        "stepIndex": latest["stepIndex"],
+    }
+    if ready:
+        result_path.write_text(content, encoding="utf-8")
+        payload["content"] = content
+    else:
+        payload["contentTail"] = content[-4000:]
+        payload["message"] = "Recovered latest Antigravity model response from transcript, but result marker was absent."
+    return payload
 
 
 def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
@@ -1277,6 +1427,8 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
     )
     detected = resolve_antigravity_command(command)
     resolved_command = detected["command"] or (command or "antigravity")
+    handoff_slug = sanitize_filename(str(handoff.get("id") or "handoff"), "handoff")
+    run_log_path = LOG_DIR / f"antigravity-{handoff_slug}-{uuid.uuid4().hex[:8]}.log"
     command_line, resolved_style = build_antigravity_command_line(
         resolved_command,
         prompt,
@@ -1284,15 +1436,20 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
         mode,
         window_mode,
         execution_style,
+        workspace_dir=repo_path,
+        log_file=run_log_path,
     )
+    run_cwd = antigravity_run_cwd(resolved_command, repo_path, resolved_style)
 
     if dry_run:
         return {
             "handoff": handoff,
             "repoPath": str(repo_path.resolve()),
+            "runCwd": str(run_cwd.resolve()),
             "available": detected["available"],
             "checked": detected["checked"],
             "commandLine": command_line,
+            "logPath": str(run_log_path),
             "commandKind": antigravity_command_kind(detected["command"]),
             "executionStyle": resolved_style,
             "completionCapture": resolved_style != "ide_chat",
@@ -1329,15 +1486,18 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
                 "at": now_iso(),
                 "commandLine": command_line,
                 "repoPath": str(repo_path),
+                "runCwd": str(run_cwd.resolve()),
+                "logPath": str(run_log_path),
                 "resultPath": str(result_path),
                 "waitForResult": wait_for_result,
             },
         },
     )
+    started_at = time.time()
     try:
         completed = subprocess.run(
             command_line,
-            cwd=str(repo_path.resolve()),
+            cwd=str(run_cwd.resolve()),
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -1354,6 +1514,8 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
                     "at": now_iso(),
                     "commandLine": command_line,
                     "repoPath": str(repo_path.resolve()),
+                    "runCwd": str(run_cwd.resolve()),
+                    "logPath": str(run_log_path),
                     "timeoutSec": timeout_sec,
                     "resultPath": str(result_path),
                     "stdout": (exc.stdout or "")[-4000:],
@@ -1371,6 +1533,8 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
         "at": now_iso(),
         "commandLine": command_line,
         "repoPath": str(repo_path.resolve()),
+        "runCwd": str(run_cwd.resolve()),
+        "logPath": str(run_log_path),
         "executionStyle": resolved_style,
         "completionCapture": resolved_style != "ide_chat",
         "waitForResult": wait_for_result,
@@ -1381,7 +1545,28 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
     }
     result_payload: dict[str, Any] | None = None
     if completed.returncode == 0 and wait_for_result:
-        result_payload = wait_for_result_file(result_path, result_timeout_sec, poll_interval_sec)
+        result_payload = ready_result_payload(result_path)
+        if result_payload is None and resolved_style == "agy_print":
+            result_payload = recover_result_from_antigravity_transcript(result_path, started_at, run_log_path)
+            if result_payload is not None:
+                run_record["transcriptFallback"] = {
+                    "source": result_payload.get("source"),
+                    "ready": result_payload.get("ready"),
+                    "transcriptPath": result_payload.get("transcriptPath"),
+                    "stepIndex": result_payload.get("stepIndex"),
+                }
+        if result_payload is None or not result_payload["ready"]:
+            result_payload = wait_for_result_file(result_path, result_timeout_sec, poll_interval_sec)
+            if not result_payload["ready"] and resolved_style == "agy_print":
+                transcript_payload = recover_result_from_antigravity_transcript(result_path, started_at, run_log_path)
+                if transcript_payload is not None:
+                    result_payload = transcript_payload
+                    run_record["transcriptFallback"] = {
+                        "source": result_payload.get("source"),
+                        "ready": result_payload.get("ready"),
+                        "transcriptPath": result_payload.get("transcriptPath"),
+                        "stepIndex": result_payload.get("stepIndex"),
+                    }
         run_record["result"] = result_payload
         status = "COMPLETED" if result_payload["ready"] else "AWAITING_RESULT"
 
@@ -1394,6 +1579,8 @@ def tool_run_antigravity_handoff(args: dict[str, Any]) -> dict[str, Any]:
         "completionCapture": resolved_style != "ide_chat",
         "waitForResult": wait_for_result,
         "resultPath": str(result_path),
+        "runCwd": str(run_cwd.resolve()),
+        "logPath": str(run_log_path),
         "stdoutTail": completed.stdout[-4000:],
         "stderrTail": completed.stderr[-4000:],
     }
