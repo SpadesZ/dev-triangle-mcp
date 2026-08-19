@@ -299,7 +299,19 @@ if ($Orchestrator -in @("claude", "both")) {
   # owns and rewrites itself. Rewriting it from here risks clobbering project
   # history for no good reason when a supported command exists - so print the
   # command instead of editing the file.
-  $notes += "For Claude Code, run: claude mcp add dev-triangle --scope user -- `"$PythonPath`" `"$ServerPath`""
+  #
+  # The -e flags are not optional. Without DEV_TRIANGLE_HOME the server falls
+  # back to <ToolRoot>\.dev-triangle, so Claude Code would keep a second, empty
+  # ledger while Codex and Claude Desktop share the real one - two orchestrators
+  # writing separate books, with no error to notice.
+  $claudeCodeCommand = "claude mcp add dev-triangle --scope user" +
+    " -e DEV_TRIANGLE_HOME=`"$StateRoot`"" +
+    " -e ANTIGRAVITY_HANDOFF_DIR=`"$HandoffRoot`"" +
+    " -e ANTIGRAVITY_COMMAND=`"$AgyPath`"" +
+    " -- `"$PythonPath`" `"$ServerPath`""
+  $notes += "For Claude Code, run: $claudeCodeCommand"
+  $notes += "The -e flags matter: without DEV_TRIANGLE_HOME, Claude Code gets its own empty ledger at $ToolRoot\.dev-triangle instead of sharing $StateRoot."
+  $notes += "If your claude CLI does not accept -e, add the same mcpServers entry to ~/.claude.json by hand - the shape is identical to $ClaudeDesktopConfig."
 }
 
 # Worker-side config is written regardless of who orchestrates: these two get

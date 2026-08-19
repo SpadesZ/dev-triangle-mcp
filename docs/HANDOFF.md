@@ -127,21 +127,41 @@ S4.1 machine_verified_rate = 1.000 (1/1)
 
 跑通一次就是這條路線第一次的真實證據。
 
-### 2. `install-local.ps1 -Orchestrator both` 未實跑
+### 2. Claude **Code** 尚未掛上（Claude Desktop 已完成）
 
-腳本以 PowerShell Parser 檢查 `parses clean`，但 **Claude Desktop 那條寫入路徑沒有實機證據**（施工當輪工具權限被間歇性擋掉）。要跑：
+`install-local.ps1 -Orchestrator both` **已於 2026-08-19 實機跑過**，`doctor.ps1` 回報
+`orchestratorConfigured  codex, claudeDesktop`，四份設定各留一份 `.dev-triangle-backup-*`。
 
-```powershell
-cd D:\dev-triangle-mcp
-.\scripts\install-local.ps1 -ToolRoot D:\dev-triangle-mcp -Orchestrator both
-.\scripts\doctor.ps1     # orchestratorConfigured 應由 "codex" 變成 "codex, claudeDesktop"
+還沒完成的是 **Claude Code**（終端／IDE 的那一個，跟 Claude Desktop 是不同客戶端）。
+`~/.claude.json` 目前**沒有 `mcpServers` 鍵**，代表那道指令還沒跑。
+
+⚠️ **這道指令一定要帶 `-e`。** `server.py` 在沒有 `DEV_TRIANGLE_HOME` 時會退回
+`<ToolRoot>\.dev-triangle`，實測：
+
+```
+沒有 DEV_TRIANGLE_HOME  → D:\dev-triangle-mcp\.dev-triangle\jobs.json  （空的）
+Codex 與 Claude Desktop → C:\Users\Franky Kuo\.dev-triangle\jobs.json  （jobs=12, handoffs=18）
 ```
 
-它會先備份三份設定。**Claude Code 那邊刻意不由腳本改寫** `~/.claude.json`（那是 Claude Code 自己擁有並持續重寫的大檔），安裝器改為印出：
+也就是說少了那個環境變數，**Claude Code 會自己記一本空帳，而且不會有任何錯誤訊息**——
+跟這一輪一開始 `D:` 與 `DevTools` 兩份 checkout 分岔是同一類無聲失效，只是這次分岔的是帳本。
+
+安裝器現在印出的完整指令（`notes` 欄）：
 
 ```powershell
-claude mcp add dev-triangle --scope user -- "<python>" "D:\dev-triangle-mcp\server.py"
+claude mcp add dev-triangle --scope user `
+  -e DEV_TRIANGLE_HOME="C:\Users\Franky Kuo\.dev-triangle" `
+  -e ANTIGRAVITY_HANDOFF_DIR="C:\Users\Franky Kuo\.dev-triangle\antigravity-handoffs" `
+  -e ANTIGRAVITY_COMMAND="C:\Users\Franky Kuo\AppData\Local\agy\bin\agy.exe" `
+  -- "<python>" "D:\dev-triangle-mcp\server.py"
 ```
+
+**Claude Code 那邊刻意不由腳本改寫** `~/.claude.json`（41.5 KB，含 `projects` 歷史與
+`oauthAccount`，是 Claude Code 自己擁有並持續重寫的檔）。若你的 `claude` CLI 不吃 `-e`，
+就手動在 `~/.claude.json` 加一個 `mcpServers` 條目——**形狀與
+`%APPDATA%\Claude\claude_desktop_config.json` 完全相同**，照抄即可。
+
+跑完後 `doctor.ps1` 的 `orchestratorConfigured` 應再多出 `claudeCode`。
 
 ### 3. CI 只做過本機模擬
 
