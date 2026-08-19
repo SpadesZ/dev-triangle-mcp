@@ -15,9 +15,15 @@ Human orientation:
   antigravity_report_server.py.
 
 Safety shape:
-  This file intentionally does not expose a generic shell execution tool.
+  This file does not expose a *generic* shell execution tool. Local
+  verification runs only allowlisted commands declared by the target repo in
+  .dev-triangle/verify.json; callers cannot supply command strings.
   Antigravity execution is restricted to explicit CLI handoff commands, and
   Jules access is restricted to the Jules REST API adapter.
+
+  The allowlisted suite runner is a named exception approved on 2026-08-19,
+  not a relaxation. See docs/SAI.md S7.1 for its three binding conditions and
+  docs/decisions/2026-08-19-three-vendor-upgrade.md for the approval record.
 """
 
 from __future__ import annotations

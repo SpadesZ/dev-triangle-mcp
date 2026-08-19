@@ -357,6 +357,7 @@ Start here:
 - Give the full `dev_triangle` MCP server only to the orchestrator.
 - Give worker agents the report-only MCP server.
 - Do not expose a generic shell executor over MCP.
+- The verification suite runner is allowlisted and repo-declared. See docs/SAI.md S7.1.
 - Keep runtime state out of Git.
 - Keep secrets in environment variables or a proper secret manager.
 - Treat mock/fake workers as tests only, not final proof of a real worker run.

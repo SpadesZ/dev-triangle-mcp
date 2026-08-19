@@ -35,6 +35,9 @@
 
 ## Non-Goals
 
-- No generic shell executor exposed over MCP.
+- No generic shell executor exposed over MCP. The verification suite runner is
+  a named exception, not a relaxation: it runs only allowlisted commands that
+  the target repo declares in `.dev-triangle/verify.json`, and callers cannot
+  supply command strings. See `docs/SAI.md` S7.1.
 - No secrets written into repo or user config.
 - No worker agent gets the full control-plane server by default.
