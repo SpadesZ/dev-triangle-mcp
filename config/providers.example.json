@@ -14,6 +14,11 @@
   "_fields": {
     "displayName": "Yours. Any text, any language, emoji fine. Never used as a lookup key.",
     "kind": "Fixed enum: api | jules | local-suite | cli | mcp | mcp-client. It selects which adapter runs.",
+    "_cliFields": "The four below apply when kind is 'cli' - handing work to an agent CLI you already have installed, instead of a metered API.",
+    "command": "The executable. Only editable in this file, never from a conversation - see docs/NOTES.md NOTE-012.",
+    "args": "Passed to the CLI verbatim, before the prompt. Put a model flag here if that CLI wants one; this project does not know which flag that is.",
+    "promptArg": "The flag or subcommand that comes right before the prompt, e.g. '-p' or 'exec'. Leave empty if there isn't one.",
+    "promptVia": "stdin (default) or arg. Keep stdin: prompts are long and multi-line, and a command line is neither - see NOTE-013.",
     "provider": "Yours. A free-form label for the vendor. This project deliberately does not list allowed values.",
     "dialect": "How to shape the HTTP request: openai | anthropic | gemini | ollama. Leave empty to let the adapter infer it.",
     "model": "Yours. The model id, exactly as your provider spells it. Empty = this role is not configured.",
@@ -22,6 +27,17 @@
     "maxInputTokens": "Yours, or null to let the provider's own API complain instead.",
     "enabled": "false means this role's tools refuse immediately rather than trying a call. That is the normal state for 'not decided yet'.",
     "verified": "Set by the tooling when the model id was checked against the provider's model list. Missing means not verified."
+  },
+  "_cliExample": {
+    "_comment": "Copy this shape over contextBroker or architect to hand that leg to a CLI you are already paying for through a subscription. No API key, no per-token bill.",
+    "displayName": "架構師",
+    "kind": "cli",
+    "command": "claude",
+    "args": [],
+    "promptArg": "-p",
+    "promptVia": "stdin",
+    "model": "",
+    "enabled": true
   },
   "roles": {
     "orchestrator": {

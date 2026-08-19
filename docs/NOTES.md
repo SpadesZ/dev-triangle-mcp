@@ -27,6 +27,11 @@
 | NOTE-006 | 逾時必須終止整棵行程樹，不是只殺父行程 | 孤兒行程鎖住檔案與埠口 |
 | NOTE-007 | `verify.json` 的 hash 必須連 `git HEAD` 一起算 | `VUL-03` TOCTOU；`F4` 惡意 repo |
 | NOTE-008 | `S4.9` 的掃描限定在指派與 `return` 位置，比 SAI 的字面 grep 窄 | 量尺不得誤殺，也不得被放寬 |
+| NOTE-009 | `cli` 角色的 `args` 逐字照抄，`model` 只是標籤 | 不得內建任何廠商旗標 |
+| NOTE-010 | CLI 角色的 `usage` 一律空的，不得補零或估算 | 「花了多少」不能用猜的 |
+| NOTE-011 | 不做自動換模型的備援鏈 | 靜默降級；擁有者裁決用 profile 切換 |
+| NOTE-012 | `command`／`args` 永遠不可經 NL 通道寫入 | `F17` 從「改端點」升級成「跑任意程式」 |
+| NOTE-013 | CLI 的 prompt 預設走 stdin，不走命令列引數 | Windows `.cmd` shim 會切斷多行；命令列有長度上限 |
 
 ---
 
@@ -188,3 +193,104 @@
   該測試斷言三種真違規（`model = ... or`、`base_url = ... or`、`return ... or`）都抓得到，且上述兩個被放行的形狀不會命中。
   突變：把 `SILENT_DEFAULT_PATTERNS` 清空 → **必須變紅**。
 - **維護邊界**：要再排除新的形狀，必須（a）在此列出那一行的原文與它為什麼不決定行為，（b）在測試裡加一條對應的 `assert not is_silent_default(...)`。**不得**直接放寬正則或整個檔案排除。
+
+---
+
+## NOTE-009 `cli` 角色的 `args` 逐字照抄，`model` 只是標籤
+
+- **決策日期**：2026-08-19
+- **適用範圍**：`providers/cli_agent.py` 的 `build_command()`；`providers/profiles.py` 的 `args`／`prompt_arg` 欄位；`config/providers.example.json` 的 `cli` 角色註解。
+- **決策**：CLI 指令列一律組成 `[command, *args, promptArg, prompt]`，`args` **逐字照抄使用者填的清單**。本專案**不得**為任何 CLI 內建旗標——不猜「這家要用 `--model`、那家要用 `-m`」。`cli` 角色的 `model` 欄位**只是給人看與記帳用的標籤**，不會被組進指令列。
+- **原因**：這一層存在的理由是「使用者手上有哪支 CLI，就用哪支」。一旦開始替各家猜旗標，就等於本專案宣稱自己知道那些 CLI 的介面——而那些介面**會改版，而且改版時不會通知這個 repo**。到時候壞掉的形狀是：指令跑起來了、旗標被忽略或報錯、使用者以為用的是 A 模型其實是預設模型。
+  逐字照抄的代價是使用者要自己寫對 `args`，但**寫錯會立刻炸**（CLI 自己會抱怨未知旗標），而不是安靜地跑錯。**會吵的錯誤勝過安靜的錯誤。**
+  `model` 不進指令列也是同一個理由：真要指定模型，使用者把 `--model X` 放進 `args` 就好，那是他那支 CLI 的語法，不是本專案發明的。
+- **驗證**：
+  ```powershell
+  python -m pytest -q tests\test_cli_agent.py::test_args_are_passed_verbatim tests\test_cli_agent.py::test_model_is_a_label_not_a_flag
+  ```
+  突變：在 `build_command()` 裡加 `if binding.model: line += ["--model", binding.model]` → **必須變紅**。
+- **維護邊界**：要支援某支 CLI 的特殊呼叫形狀（例如 prompt 要走 stdin 而不是引數），正確做法是新增一個 `kind`，不是在 `cli` 裡加分支判斷廠商。
+
+---
+
+## NOTE-010 CLI 角色的 `usage` 一律是空的，不得補零或估算
+
+- **決策日期**：2026-08-19
+- **適用範圍**：`providers/cli_agent.py` `run_agent()` 的回傳；`tool_usage_summary` 的彙總欄位；`job.cost`。
+- **決策**：CLI 路徑回傳的 `usage` **一律是空 dict**。不得填 `{"input_tokens": 0}`，不得用字元數估算 token，不得從 CLI 的 stdout 猜。用量彙總必須把這種來源標成 `tokensAvailable: false`，而不是顯示 0。
+- **原因**：訂閱制的 agent CLI 不回報 token 數——那是它的計費模型決定的，不是本專案能補的資訊。
+  補 0 的後果很具體：`tool_usage_summary` 會顯示「architect 這個月花了 0 token」，而使用者的**真實結論會是「這條路線不花錢」**。它其實在燒訂閱額度，只是這裡量不到。**一個顯示 0 的欄位比一個明說「量不到」的欄位更危險**，因為前者看起來像已經量過了。
+  估算更糟：字元數換 token 的誤差在程式碼與多語言內容上可以到兩三倍，而一旦有數字，下一個人就會拿它做決策。
+- **驗證**：
+  ```powershell
+  python -m pytest -q tests\test_cli_agent.py::test_cli_usage_is_empty_not_zero
+  ```
+  突變：把 `run_agent()` 的 `"usage": {}` 改成 `{"input_tokens": 0, "output_tokens": 0}` → **必須變紅**。
+- **維護邊界**：哪天某支 CLI 真的開始回報 token（例如加了 `--json` 輸出用量），那時才把它解析出來填進 `usage`——**解析得到才填，解析不到維持空的**。
+
+---
+
+## NOTE-011 不做自動換模型的備援鏈
+
+- **決策日期**：2026-08-19
+- **適用範圍**：`providers/dispatch.py`；未來任何想在 `send()` 外面包一層「這家失敗換那家」的程式碼。
+- **決策**：`dispatch.send()` 失敗就是失敗，**不自動換到另一個 provider 或另一個模型**。額度用完、429、CLI 不存在，一律把錯誤原樣往上報，由使用者決定換哪一組——換的方式是切 profile（`W15`），不是系統自己挑。
+  `send_expecting_json()` 的重問是**同一個 binding 重問一次格式**，不是換人，兩者不要混為一談。
+- **原因**：擁有者於 2026-08-19 明確裁決「不做備援鏈，用 profile 切換」。理由不是備援做不出來，是**靜默降級**：M1 是貴的好模型、M3 是便宜的，自動掉下去會讓產出品質悄悄變差，而 ledger 上一路綠燈。
+  這與 `INV-15(c)`（派送顯示去向）表面上可以緩解——去向欄位會顯示實際用了誰——但那只在使用者**回頭看**的時候有效；自動降級發生在無人看管的長跑裡，而那正是它最會出事的時候。
+  **把「換誰」留在使用者手上，是這個決策唯一的內容。**
+- **驗證**：
+  ```powershell
+  python -m pytest -q tests\test_cli_agent.py::test_dispatch_does_not_fall_back
+  ```
+  該測試讓一個 binding 必定失敗，斷言 `DispatchError` 往上冒且沒有第二個 binding 被呼叫。
+  突變：在 `send()` 加一個 `except ... : return send(other_binding, ...)` → **必須變紅**。
+- **維護邊界**：`send_expecting_json` 的「重問一次」是格式重問，上限寫死 1 次。要改成重問兩次以上必須先回答「為什麼第二次會比第一次好」，否則那就是沒有煞車的迴圈。
+
+---
+
+## NOTE-012 `command` 與 `args` 永遠不可經 NL 通道寫入
+
+- **決策日期**：2026-08-19
+- **適用範圍**：`providers/profiles.py` 的 `WRITABLE_ROLE_FIELDS`；`server.py` 的 `NL_WRITABLE_FIELDS` 與 `tool_profile_set_role` 的參數表。
+- **決策**：`command`、`args`、`promptArg`、`kind` **一律不列入可由 `profile_set_role` 寫入的欄位**，只能由使用者親手編輯 `config/providers.<name>.json`。
+- **原因**：`W13` 之後，設定變更**不設閘門**（擁有者裁決 gate #8／#9），已接受的殘餘風險是 `F17`：一段藏在 repo 內容或錯誤 log 裡的文字，可以讓 Orchestrator 相信「使用者要求改設定」。
+  在 `W14` 之前，`F17` 的最壞結果是**把 brief 送到別的端點**——嚴重，但邊界是「資料外流」。
+  一旦 `command` 可經 NL 寫入，同一段注入文字的最壞結果變成**在這台機器上執行任意程式**。那不是同一個等級的風險，是**跨越了 `INV-01` 那條線**——本專案花了 `W03` 一整包的力氣，才讓「執行本機指令」限縮成「目標 repo 自宣告的白名單」，如果 NL 可以指定任意可執行檔，那道限制就被從側面繞過了。
+  ⚠️ **注意這與 gate #8「我的 NL 就是最高權限」不衝突。** 那道裁決解除的是「**使用者設定自己的工具**」這條路上的確認；它明文**不解除** `verify.json` 的 hash 閘，理由是那道閘擋的不是使用者、是「別人的檔案能不能在你的機器上跑指令」。`command` 屬於**後者**：工具分不出那句話是使用者講的還是 repo 裡的文字，而後果是執行任意程式。
+- **驗證**：
+  ```powershell
+  python -m pytest -q tests\test_cli_agent.py::test_command_is_never_nl_writable
+  ```
+  該測試斷言 `command`／`args`／`promptArg`／`kind` 都不在 `profile_set_role` 的 schema 裡，且直接呼叫 `update_role_in_file` 傳入 `command` 會被拒絕。
+  突變：把 `command` 加進 `WRITABLE_ROLE_FIELDS` 或 `NL_WRITABLE_FIELDS` → **必須變紅**。
+- **維護邊界**：使用者想用講的換 CLI 時，正確答案是「我幫你把 `config/providers.<name>.json` 打開，你自己改那一行」，或是預先在檔案裡準備好多個 profile 再用 `profile_activate` 切（`W15`）——**切換一組事先由人審過的設定是安全的，憑空指定一個可執行檔不是。**
+
+---
+
+## NOTE-013 CLI 的 prompt 預設走 stdin，不走命令列引數
+
+- **決策日期**：2026-08-19
+- **適用範圍**：`providers/cli_agent.py` 的 `run_agent()`／`build_command()`；`providers/profiles.py` 的 `promptVia` 欄位（預設 `"stdin"`）；`server.py` `run_native()` 的 `input_text` 參數。
+- **決策**：CLI 角色的 prompt **預設由 stdin 送入**。`promptVia: "arg"` 是給少數只吃引數的 CLI 的逃生口，**不得改成預設**。
+- **原因**：這是 2026-08-19 寫測試時**在 Windows 上實際踩到的**，不是預防性設計。
+
+  `test_real_cli_receives_the_expected_argv` 第一版把 prompt 當成 argv 元素傳，斷言失敗：
+
+  ```
+  assert 'USER' in argv[2]
+  AssertionError: assert 'USER' in 'SYS'
+  ```
+
+  prompt 是 `SYS\n\n---\n\nUSER`，經過 Windows 的 `.cmd` shim（`%*` 由 cmd.exe 重新解析）之後**在換行處被切成兩個引數**，下游只收到前半段。而 **npm 安裝的 agent CLI 在 Windows 上幾乎都是 `.cmd` shim**，所以這不是測試造出來的人工情境，是這條路線在 Windows 上的預設情境。
+
+  第二個理由與平台無關：Windows 命令列**總長度上限約 32KB**，而 `context_broker` 送出去的 repo outline 上限就設在 `MAX_DIGEST_CHARS = 40000`。也就是說即使沒有換行問題，**這個 payload 本來就超過命令列裝得下的大小**。
+
+  兩件事合起來的結論是：**命令列從來就不是這個 payload 的正確通道**。真正的 agent CLI 也是這樣設計的——它們吃 stdin，正因為 prompt 又長又多行。
+- **驗證**：
+  ```powershell
+  python -m pytest -q tests\test_cli_agent.py::test_multiline_prompt_survives_via_stdin
+  ```
+  該測試用一支真的假 CLI（Windows 上就是 `.cmd` shim），送一個帶換行的 prompt，斷言完整內容原封抵達。
+  突變：把 `prompt_via` 的預設從 `"stdin"` 改成 `"arg"` → **必須變紅**（在 Windows 上；POSIX 上換行可以存活，所以該測試另外斷言 payload 長度超過命令列上限的情境）。
+- **維護邊界**：`promptVia: "arg"` 保留給真的只吃引數的 CLI，但用它時 payload 長度風險由使用者承擔。**不得為了「看起來比較直觀」把預設換回引數。**

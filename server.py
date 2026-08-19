@@ -552,7 +552,13 @@ def kill_process_tree(proc: subprocess.Popen[str]) -> None:
         proc.kill()
 
 
-def run_native(command: list[str], cwd: Path | None = None, timeout: int = 60, allow_failure: bool = False) -> dict[str, Any]:
+def run_native(
+    command: list[str],
+    cwd: Path | None = None,
+    timeout: int = 60,
+    allow_failure: bool = False,
+    input_text: str | None = None,
+) -> dict[str, Any]:
     try:
         proc = subprocess.Popen(
             command,
@@ -560,6 +566,7 @@ def run_native(command: list[str], cwd: Path | None = None, timeout: int = 60, a
             text=True,
             encoding="utf-8",
             errors="replace",
+            stdin=subprocess.PIPE if input_text is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             **child_process_spawn_kwargs(),
@@ -568,7 +575,7 @@ def run_native(command: list[str], cwd: Path | None = None, timeout: int = 60, a
         raise ToolError(f"Command not found: {command[0]}") from exc
 
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        stdout, stderr = proc.communicate(input=input_text, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         kill_process_tree(proc)
         try:
@@ -3051,6 +3058,62 @@ def save_patch_file(job_id: str, patch_text: str, suffix: str = "") -> Path:
     return path
 
 
+def tool_start_job(args: dict[str, Any]) -> dict[str, Any]:
+    """Open a job for a route that has no context-broker step.
+
+    broker-architect jobs are created by dispatch_context_brief. The other three
+    routes had no entry point at all until this existed, which is why
+    architect-only was declared in JOB_ROUTES but unreachable.
+    """
+    repo_path = resolve_project_dir(require_string(args, "repoPath", 2000))
+    user_request = require_string(args, "userRequest", 20000)
+    route = optional_string(args, "route", 100) or "local"
+    source_paths = optional_string_list(args, "sourcePaths")
+    profile_name = optional_string(args, "profile", 100) or profiles.active_profile_name()
+
+    if route not in JOB_ROUTES:
+        raise ToolError(f"Unknown route {route!r}. Known routes: {list(JOB_ROUTES)}.")
+    if route == "architect-only" and not source_paths:
+        # Skipping the intelligence layer means somebody else decides which
+        # files the architect sees. On this route that somebody is the caller;
+        # leaving it empty would send the architect in with nothing to read.
+        raise ToolError(
+            "Route 'architect-only' needs sourcePaths. With no context broker, the caller chooses "
+            "which files the architect gets to read - that is what this route means."
+        )
+    missing = [item for item in source_paths if not (repo_path / item).exists()]
+    if missing:
+        raise ToolError(f"These sourcePaths do not exist in {repo_path}: {missing[:10]}")
+
+    job = new_job_skeleton(
+        provider="dev-triangle", route=route, title=user_request[:120], profile=profile_name
+    )
+    job["repoPath"] = str(repo_path)
+    job["userRequest"] = user_request
+    if source_paths:
+        job["contextBrief"]["author"] = "orchestrator"
+        job["contextBrief"]["repoSummary"] = (
+            "No context broker on this route. The files below were chosen by the orchestrator."
+        )
+        job["contextBrief"]["sourceRefs"] = source_paths
+        job["contextBrief"]["impactedFiles"] = source_paths
+    saved = upsert_job(job)
+    return {
+        "status": "OK",
+        "jobId": saved["id"],
+        "route": route,
+        "job": job_with_defaults(saved),
+        "message": (
+            f"Job {saved['id']} open on route {route!r} with {len(source_paths)} source file(s). "
+            + (
+                "Next: dispatch_architect."
+                if route == "architect-only"
+                else "Next: make your changes, then run_verification_suite."
+            )
+        ),
+    }
+
+
 def tool_dispatch_architect(args: dict[str, Any]) -> dict[str, Any]:
     repo_path = resolve_project_dir(require_string(args, "repoPath", 2000))
     job_id = require_string(args, "jobId", 200)
@@ -3670,6 +3733,31 @@ TOOLS = [
         ),
     },
     {
+        "name": "start_job",
+        "title": "Open A Job",
+        "description": (
+            "Open a ledger job for the local or architect-only route. Use architect-only when you "
+            "have already decided which files matter and want to skip the context broker; pass those "
+            "files as sourcePaths. Use local when you are making the changes yourself and only need "
+            "the verification and quality gate. The broker-architect route starts with "
+            "dispatch_context_brief instead."
+        ),
+        "inputSchema": schema(
+            {
+                "repoPath": {"type": "string"},
+                "userRequest": {"type": "string"},
+                "route": {"type": "string", "enum": [item for item in JOB_ROUTES if item != "broker-architect"]},
+                "sourcePaths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Repo-relative files the architect should read. Required for architect-only.",
+                },
+                "profile": {"type": "string"},
+            },
+            ["repoPath", "userRequest"],
+        ),
+    },
+    {
         "name": "dispatch_architect",
         "title": "Produce Patch From Brief",
         "description": (
@@ -3804,6 +3892,7 @@ HANDLERS = {
     # slot at itself, which is why INV-02 matters more after the gate was
     # removed, not less.
     "dispatch_context_brief": tool_dispatch_context_brief,
+    "start_job": tool_start_job,
     "dispatch_architect": tool_dispatch_architect,
     "apply_patch": tool_apply_patch,
     "self_heal": tool_self_heal,

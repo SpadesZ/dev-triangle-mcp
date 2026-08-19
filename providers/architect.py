@@ -24,7 +24,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from providers import http, outbound
+from providers import dispatch, outbound
 from providers.profiles import RoleBinding
 
 
@@ -122,8 +122,9 @@ def create_implementation(
     safe_payload = outbound.prepare_payload(payload)
     safe_system = outbound.prepare_payload(SYSTEM_PROMPT)
 
-    response = http.chat(binding, safe_system, safe_payload)
-    parsed = parse_implementation_json(response["text"])
+    parsed, response = dispatch.send_expecting_json(
+        binding, safe_system, safe_payload, parse_implementation_json
+    )
 
     patch = parsed.get("patch")
     if not isinstance(patch, str):

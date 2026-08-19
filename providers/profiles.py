@@ -87,6 +87,12 @@ class RoleBinding:
     enabled: bool = False
     verified: bool = False
     command: str = ""
+    # Passed to the CLI verbatim, before the prompt. This is where a model flag
+    # goes if that CLI wants one; this project does not know which flag that is.
+    args: tuple[str, ...] = field(default_factory=tuple)
+    prompt_arg: str = ""
+    # How the prompt reaches the CLI. stdin by default - see NOTE-013.
+    prompt_via: str = "stdin"
     server: str = ""
     note: str = ""
     overrides_applied: tuple[str, ...] = field(default_factory=tuple)
@@ -95,6 +101,10 @@ class RoleBinding:
     def configured(self) -> bool:
         if self.kind == "api":
             return bool(self.model) and bool(self.api_key_env)
+        if self.kind == "cli":
+            # A cli role needs a command. It does not need a model - see
+            # docs/NOTES.md NOTE-004.
+            return bool(self.command)
         return True
 
     @property
@@ -117,6 +127,10 @@ class RoleBinding:
             "enabled": self.enabled,
             "verified": self.verified,
             "configured": self.configured,
+            "command": self.command,
+            "args": list(self.args),
+            "promptArg": self.prompt_arg,
+            "promptVia": self.prompt_via,
             "overridesApplied": list(self.overrides_applied),
         }
 
@@ -216,6 +230,25 @@ def _as_bool(role: dict[str, Any], key: str, where: str, default: bool) -> bool:
     return value
 
 
+def _as_str_tuple(role: dict[str, Any], key: str, where: str) -> tuple[str, ...]:
+    value = role.get(key)
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ProfileError(f"{where}: {key} must be a list of strings.")
+    return tuple(value)
+
+
+PROMPT_VIA_VALUES = ("stdin", "arg")
+
+
+def _as_prompt_via(role: dict[str, Any], where: str) -> str:
+    value = role.get("promptVia", "stdin")
+    if not isinstance(value, str) or value not in PROMPT_VIA_VALUES:
+        raise ProfileError(f"{where}: promptVia must be one of {list(PROMPT_VIA_VALUES)}.")
+    return value
+
+
 def _as_optional_int(role: dict[str, Any], key: str, where: str) -> int | None:
     value = role.get(key)
     if value is None:
@@ -259,6 +292,9 @@ def parse_role(slot: str, role: dict[str, Any], where: str) -> RoleBinding:
         # Missing means unverified. Conservative side, per SAI A8.
         verified=_as_bool(role, "verified", where, False),
         command=_as_str(role, "command", where),
+        args=_as_str_tuple(role, "args", where),
+        prompt_arg=_as_str(role, "promptArg", where),
+        prompt_via=_as_prompt_via(role, where),
         server=_as_str(role, "server", where),
         note=_as_str(role, "note", where),
     )
@@ -430,6 +466,14 @@ def resolve_role(
                 "never stores key values."
             )
 
+    if binding.kind == "cli" and not binding.command:
+        # A cli role with no command has nothing to hand work to. Note this is
+        # the command that is required, not the model - NOTE-004.
+        raise RoleNotConfigured(
+            f"ROLE_NOT_CONFIGURED: role {slot!r} ({binding.label}) is a cli role with no command. "
+            f"Fill roles.{slot}.command in {profile.path} with the executable that should do the work."
+        )
+
     return binding
 
 
@@ -447,6 +491,9 @@ def _replace(binding: RoleBinding, **changes: Any) -> RoleBinding:
         "enabled": binding.enabled,
         "verified": binding.verified,
         "command": binding.command,
+        "args": binding.args,
+        "prompt_arg": binding.prompt_arg,
+        "prompt_via": binding.prompt_via,
         "server": binding.server,
         "note": binding.note,
         "overrides_applied": binding.overrides_applied,

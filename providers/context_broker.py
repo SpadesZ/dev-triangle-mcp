@@ -25,7 +25,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from providers import http, outbound
+from providers import dispatch, outbound
 from providers.profiles import RoleBinding
 
 
@@ -77,8 +77,7 @@ def detect(binding: RoleBinding) -> dict[str, Any]:
         "configured": binding.configured,
         "enabled": binding.enabled,
         "dialect": binding.dialect,
-        "targetBaseUrl": binding.base_url or http.default_base_url(binding.dialect),
-        "targetModel": binding.model,
+        **dispatch.destination_of(binding),
     }
 
 
@@ -179,8 +178,7 @@ def create_brief(
     safe_payload = outbound.prepare_payload(user_payload)
     safe_system = outbound.prepare_payload(SYSTEM_PROMPT)
 
-    response = http.chat(binding, safe_system, safe_payload)
-    parsed = parse_brief_json(response["text"])
+    parsed, response = dispatch.send_expecting_json(binding, safe_system, safe_payload, parse_brief_json)
 
     impacted = string_list(parsed.get("impactedFiles"))
     source_refs = string_list(parsed.get("sourceRefs"))
