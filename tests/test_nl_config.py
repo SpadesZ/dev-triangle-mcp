@@ -326,6 +326,101 @@ def test_describe_reports_bindings_and_history(profile_env: Path) -> None:
     assert described["configChanges"][-1]["utterance"] == "use the fake one"
 
 
+# ---------------------------------------------------------------------------
+# W15: switching the whole profile at once
+# ---------------------------------------------------------------------------
+
+
+def write_second_profile(directory: Path, name: str = "cheap") -> None:
+    roles = base_roles()
+    roles["architect"].update({"enabled": True, "apiKeyEnv": "SOME_KEY", "model": FAKE_MODEL})
+    (directory / f"providers.{name}.json").write_text(
+        json.dumps({"schemaVersion": 1, "displayName": "", "roles": roles}, indent=2), encoding="utf-8"
+    )
+
+
+def test_activate_switches_and_persists(profile_env: Path) -> None:
+    write_second_profile(profile_env)
+
+    result = server.tool_profile_activate({"profile": "cheap", "utterance": "gemini 額度用完了，換 cheap"})
+
+    assert result["status"] == "ACTIVATED"
+    assert result["changeSummary"]["after"] == "cheap"
+    assert result["changeSummary"]["before"] == "example"
+    # Persisted, not just set in this process: a long-running MCP server cannot
+    # see an env var that changed after it started.
+    assert (profile_env / "active-profile.json").exists()
+    assert profiles.active_profile_name() == "cheap"
+
+
+def test_file_beats_the_environment_variable(profile_env: Path, monkeypatch) -> None:
+    write_second_profile(profile_env)
+    monkeypatch.setenv("DEV_TRIANGLE_PROFILE", "example")
+
+    server.tool_profile_activate({"profile": "cheap", "utterance": "switch"})
+
+    name, source = profiles.active_profile_source()
+    assert (name, source) == ("cheap", "file"), "otherwise switching appears to do nothing"
+
+
+def test_health_check_says_which_source_won(profile_env: Path) -> None:
+    write_second_profile(profile_env)
+    assert server.profile_health_block()["activeProfileSource"] == "env"
+
+    server.tool_profile_activate({"profile": "cheap", "utterance": "switch"})
+    block = server.profile_health_block()
+    assert block["activeProfile"] == "cheap"
+    assert block["activeProfileSource"] == "file"
+
+
+def test_activate_rejects_an_unknown_profile(profile_env: Path) -> None:
+    with pytest.raises(server.ToolError) as excinfo:
+        server.tool_profile_activate({"profile": "not-a-profile", "utterance": "switch"})
+    assert "example" in str(excinfo.value), "list what does exist"
+
+
+def test_activate_is_logged_with_the_utterance(profile_env: Path) -> None:
+    write_second_profile(profile_env)
+    server.tool_profile_activate({"profile": "cheap", "utterance": "換成便宜那組"})
+
+    change = config_changes()[-1]
+    assert change["scope"] == "activeProfile"
+    assert change["utterance"] == "換成便宜那組"
+    assert change["before"]["activeProfile"] == "example"
+    assert change["after"]["activeProfile"] == "cheap"
+
+
+def test_activate_reports_which_roles_are_still_unconfigured(profile_env: Path) -> None:
+    write_second_profile(profile_env)
+    result = server.tool_profile_activate({"profile": "cheap", "utterance": "switch"})
+    assert "contextBroker" in result["message"]
+
+
+def test_revert_switches_the_profile_back(profile_env: Path) -> None:
+    write_second_profile(profile_env)
+    server.tool_profile_activate({"profile": "cheap", "utterance": "switch"})
+    assert profiles.active_profile_name() == "cheap"
+
+    result = server.tool_profile_revert_last({"profile": "cheap", "utterance": "undo that"})
+
+    assert result["status"] == "REVERTED"
+    assert profiles.active_profile_name() == "example"
+    assert config_changes()[-1]["reverts"]
+
+
+def test_revert_declines_rather_than_leaving_no_profile(profile_env: Path, monkeypatch) -> None:
+    # Undoing back to "no profile at all" would make every role unreachable,
+    # which is worse than where the user already is.
+    monkeypatch.delenv("DEV_TRIANGLE_PROFILE", raising=False)
+    write_second_profile(profile_env)
+    server.tool_profile_activate({"profile": "cheap", "utterance": "switch"})
+
+    result = server.tool_profile_revert_last({"profile": "cheap", "utterance": "undo that"})
+
+    assert result["reverted"][0]["skipped"]
+    assert profiles.active_profile_name() == "cheap"
+
+
 def test_no_confirmation_path_exists() -> None:
     # Owner ruling gate #8/#9: this tool never gates. Asserted on the schema so
     # a future "just one small confirm flag" shows up here.

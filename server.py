@@ -70,7 +70,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-from providers import architect, context_broker, models, outbound, profiles
+from providers import architect, context_broker, dispatch, models, outbound, profiles
 from providers.profiles import ProfileError, RoleDisabled, RoleNotConfigured
 
 # Secret detection lives in one module so the publish scanner and every outbound
@@ -2257,10 +2257,16 @@ def profile_health_block() -> dict[str, Any]:
     Reports problems instead of raising: a health check that cannot run because
     the thing it is checking is broken is not a useful health check.
     """
+    active_name, active_source = profiles.active_profile_source()
     block: dict[str, Any] = {
         "configDir": str(profiles.config_dir()),
         "availableProfiles": profiles.list_profiles(),
-        "activeProfile": profiles.active_profile_name(),
+        "activeProfile": active_name,
+        # Which of the two channels won matters: an env var set at install time
+        # and a file written by profile_activate can disagree, and the user
+        # needs to see which one is actually in force.
+        "activeProfileSource": active_source,
+        "activeProfilePath": str(profiles.active_profile_path()),
     }
     if not block["activeProfile"]:
         block["status"] = "NO_PROFILE_SELECTED"
@@ -2788,6 +2794,78 @@ def tool_profile_describe(args: dict[str, Any]) -> dict[str, Any]:
     return described
 
 
+def profile_binding_summary(profile: profiles.Profile) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    for binding in profile.roles.values():
+        row: dict[str, Any] = {
+            "slot": binding.slot,
+            "displayName": binding.label,
+            "kind": binding.kind,
+            "configured": binding.configured,
+        }
+        if binding.kind in {"api", "cli"}:
+            row.update(dispatch.destination_of(binding))
+        summary.append(row)
+    return summary
+
+
+def tool_profile_activate(args: dict[str, Any]) -> dict[str, Any]:
+    """Switch the whole profile at once.
+
+    This is the answer to "one vendor's quota ran out": swap to a set of
+    bindings you already reviewed, rather than letting the system pick a
+    substitute on its own (NOTE-011).
+    """
+    name = require_string(args, "profile", 100)
+    utterance = require_string(args, "utterance", 4000)
+
+    try:
+        profile = profiles.load_profile(name)
+    except ProfileError as exc:
+        raise ToolError(str(exc)) from exc
+
+    before, before_source = profiles.active_profile_source()
+    path = profiles.set_active_profile(name)
+    after, after_source = profiles.active_profile_source()
+
+    change = append_config_change(
+        {
+            "profile": name,
+            "slot": "",
+            "scope": "activeProfile",
+            "before": {"activeProfile": before, "source": before_source},
+            "after": {"activeProfile": after, "source": after_source},
+            "utterance": utterance,
+            "utteranceSource": "agent_reported",
+            "verified": None,
+        }
+    )
+
+    bindings = profile_binding_summary(profile)
+    unconfigured = [item["slot"] for item in bindings if not item["configured"]]
+    return {
+        "status": "ACTIVATED",
+        "changeSummary": {
+            "scope": "activeProfile",
+            "before": before or "(none)",
+            "after": after,
+            "source": after_source,
+            "path": str(path),
+            "changeId": change["id"],
+            "bindings": bindings,
+        },
+        "message": (
+            f"Active profile is now {after!r} (was {before or 'none'}). "
+            + (
+                f"Not configured yet: {unconfigured}. "
+                if unconfigured
+                else "Every role is configured. "
+            )
+            + 'Say "undo that" to switch back.'
+        ),
+    }
+
+
 def tool_profile_set_role(args: dict[str, Any]) -> dict[str, Any]:
     # There is no confirm parameter and no NEEDS_CONFIRMATION return, by owner
     # decision. Everything below is about making the change loud and reversible
@@ -2928,7 +3006,9 @@ def tool_profile_revert_last(args: dict[str, Any]) -> dict[str, Any]:
     candidates = [
         change
         for change in ledger.get("configChanges", [])
-        if change.get("profile") == name and change.get("scope") == "profile" and not change.get("reverts")
+        if change.get("profile") == name
+        and change.get("scope") in {"profile", "activeProfile"}
+        and not change.get("reverts")
     ]
     if not candidates:
         return {"status": "NOTHING_TO_REVERT", "profile": name}
@@ -2938,6 +3018,43 @@ def tool_profile_revert_last(args: dict[str, Any]) -> dict[str, Any]:
         before = change.get("before") or {}
         restore = {key: ("" if value is None else value) for key, value in before.items()}
         if not restore:
+            continue
+        if change.get("scope") == "activeProfile":
+            previous = str(before.get("activeProfile", "")).strip()
+            if not previous:
+                # There was no active profile before this switch. Undoing to
+                # "none" would leave every role unreachable, which is a worse
+                # state than where the user is now - say so instead.
+                reverted.append(
+                    {
+                        "changeId": change.get("id"),
+                        "slot": "",
+                        "skipped": "no previous active profile to return to",
+                    }
+                )
+                continue
+            profiles.set_active_profile(previous)
+            entry = append_config_change(
+                {
+                    "profile": previous,
+                    "slot": "",
+                    "scope": "activeProfile",
+                    "before": change.get("after") or {},
+                    "after": {"activeProfile": previous, "source": "file"},
+                    "utterance": utterance,
+                    "utteranceSource": "agent_reported",
+                    "verified": None,
+                    "reverts": change.get("id"),
+                }
+            )
+            reverted.append(
+                {
+                    "changeId": change.get("id"),
+                    "slot": "",
+                    "restored": {"activeProfile": previous},
+                    "entryId": entry["id"],
+                }
+            )
             continue
         profiles.update_role_in_file(name, change["slot"], restore)
         # A revert that leaves no trace makes unlogged_config_change_count
@@ -3820,6 +3937,23 @@ TOOLS = [
         "inputSchema": schema({"profile": {"type": "string"}}),
     },
     {
+        "name": "profile_activate",
+        "title": "Switch Active Profile",
+        "description": (
+            "Switch every role at once by activating a different profile. Use this when a vendor's "
+            "quota runs out, or when moving between a cheap and a careful set of bindings. Read the "
+            "returned changeSummary back to the user, including which roles are still unconfigured. "
+            "The choice is persisted, so it survives a server restart."
+        ),
+        "inputSchema": schema(
+            {
+                "profile": {"type": "string"},
+                "utterance": {"type": "string", "description": "What the user actually said."},
+            },
+            ["profile", "utterance"],
+        ),
+    },
+    {
         "name": "profile_set_role",
         "title": "Set Role Binding",
         "description": (
@@ -3897,6 +4031,7 @@ HANDLERS = {
     "apply_patch": tool_apply_patch,
     "self_heal": tool_self_heal,
     "profile_describe": tool_profile_describe,
+    "profile_activate": tool_profile_activate,
     "profile_set_role": tool_profile_set_role,
     "profile_revert_last": tool_profile_revert_last,
 }

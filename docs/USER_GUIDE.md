@@ -347,6 +347,67 @@ Tool: Reverted 1 configuration change(s) on profile 'example'.
 The undo is itself recorded, so the change log stays complete in both
 directions.
 
+### Switching the whole set at once
+
+Changing roles one at a time is fine for a tweak. When one vendor's quota runs
+out you usually want to move everything, so keep a few profiles side by side and
+switch between them:
+
+```text
+config/providers.claude-heavy.json
+config/providers.gemini-heavy.json
+config/providers.local-only.json
+```
+
+```text
+You:  Gemini's quota is gone. Switch to gemini-heavy... actually, claude-heavy.
+Tool: Active profile is now 'claude-heavy' (was 'gemini-heavy').
+      Not configured yet: ['cloudWorker']. Say "undo that" to switch back.
+```
+
+The choice is written to `config/active-profile.json`, so it survives a server
+restart. That file also **wins over** the `DEV_TRIANGLE_PROFILE` environment
+variable the installer set — a long-running server can't see an environment
+variable that changed after it started, so if the variable won, switching would
+appear to do nothing until you restarted. `mcp_health_check` shows which of the
+two is actually in force.
+
+**What this deliberately is not:** there is no automatic failover. If a model is
+rate-limited, the job fails and tells you which one — it does not quietly
+continue on a cheaper model. Automatic downgrade would mean your code quality
+drops without the ledger showing anything wrong. Choosing the substitute is
+yours.
+
+### Using a CLI you already pay for
+
+A role does not have to be a metered API. If you already have an agent CLI
+installed, point a role at it:
+
+```json
+"architect": {
+  "displayName": "架構師",
+  "kind": "cli",
+  "command": "claude",
+  "args": [],
+  "promptArg": "-p",
+  "promptVia": "stdin",
+  "enabled": true
+}
+```
+
+`args` is passed through verbatim — if that CLI wants a model flag, put it there.
+This project deliberately does not know which flag each CLI uses, because those
+CLIs change and this repository would not hear about it.
+
+Two things to expect:
+
+- **No token counts.** A CLI doesn't report them, so the usage rollup shows
+  calls but marks tokens unavailable rather than showing zero. Zero would read
+  as "this was free"; it isn't, it's coming out of your subscription.
+- **`command` cannot be set by talking.** It's file-only, on purpose: with no
+  confirmation step on config changes, a request to change an endpoint is a data
+  problem, but a request to change *which binary runs* is a code-execution one.
+
 ### Seeing what is bound right now
 
 ```text

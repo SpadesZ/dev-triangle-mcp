@@ -179,6 +179,36 @@ def list_profiles() -> list[str]:
     return names
 
 
+ACTIVE_PROFILE_FILENAME = "active-profile.json"
+
+
+def active_profile_path() -> Path:
+    return config_dir() / ACTIVE_PROFILE_FILENAME
+
+
+def active_profile_source() -> tuple[str, str]:
+    """Return (profile name, where it came from).
+
+    The file wins over the environment variable. The env var is what the
+    installer wrote once; the file is what the user switched to since. A
+    long-running MCP process cannot see a changed env var anyway, so if the env
+    won, switching profiles would appear to do nothing until a restart.
+    """
+    path = active_profile_path()
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            raw = {}
+        name = str(raw.get("activeProfile", "")).strip()
+        if name:
+            return name, "file"
+    env_name = os.environ.get("DEV_TRIANGLE_PROFILE", "").strip()
+    if env_name:
+        return env_name, "env"
+    return "", "none"
+
+
 def active_profile_name() -> str:
     """Which profile the current process should use, or "" for none.
 
@@ -186,7 +216,21 @@ def active_profile_name() -> str:
     legitimate state that must behave like "not configured", not like "use the
     first one you find" (INV-12).
     """
-    return os.environ.get("DEV_TRIANGLE_PROFILE", "").strip()
+    return active_profile_source()[0]
+
+
+def set_active_profile(name: str) -> Path:
+    """Persist the active profile so the choice survives a server restart."""
+    if name not in list_profiles():
+        raise ProfileNotFound(
+            f"Profile {name!r} not found. Available profiles: {list_profiles() or 'none'}."
+        )
+    path = active_profile_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps({"activeProfile": name}, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return path
 
 
 # ---------------------------------------------------------------------------
