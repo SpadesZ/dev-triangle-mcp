@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-from providers import profiles
+from providers import models, profiles
 from providers.profiles import ProfileError, RoleDisabled, RoleNotConfigured
 
 # Secret detection lives in one module so the publish scanner and every outbound
@@ -2697,6 +2697,245 @@ def tool_run_verification_suite(args: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+# ---------------------------------------------------------------------------
+# Natural-language configuration bridge (SAI W13)
+#
+# The owner ruled that configuration changes are never gated (I4 #8, #9). What
+# was approved is "no gate", not "no trace": INV-15 replaces the confirmation
+# step with three frictionless mechanisms, and all three are load-bearing.
+# ---------------------------------------------------------------------------
+
+NL_WRITABLE_FIELDS = ("displayName", "provider", "dialect", "model", "baseUrl", "apiKeyEnv")
+CONFIG_SCOPES = ("profile", "thisJob")
+SECRET_IN_CHAT_MESSAGE = (
+    "Do not paste a key into the conversation. Set it in an environment variable of your own "
+    "choosing, then tell me that variable's NAME. Nothing was written."
+)
+
+
+def append_config_change(entry: dict[str, Any]) -> dict[str, Any]:
+    ledger = load_ledger()
+    ledger.setdefault("configChanges", [])
+    entry.setdefault("id", short_id("cfg"))
+    entry.setdefault("at", now_iso())
+    ledger["configChanges"].append(entry)
+    save_ledger(ledger)
+    return entry
+
+
+def resolve_profile_name(args: dict[str, Any]) -> str:
+    name = optional_string(args, "profile", 100) or profiles.active_profile_name()
+    if not name:
+        raise ToolError(
+            "No profile selected. Pass profile explicitly or set DEV_TRIANGLE_PROFILE. "
+            f"Available profiles: {profiles.list_profiles() or 'none'}."
+        )
+    return name
+
+
+def reject_if_secret(field: str, value: str) -> None:
+    """INV-13: the same detector W08 uses, never a second copy of the rules."""
+    _, hits = redact_payload(value)
+    if hits:
+        raise ToolError(
+            f"Refusing to write {field}: it contains something that matches "
+            f"{sorted({hit['pattern'] for hit in hits})}. {SECRET_IN_CHAT_MESSAGE}"
+        )
+
+
+def tool_profile_describe(args: dict[str, Any]) -> dict[str, Any]:
+    name = resolve_profile_name(args)
+    try:
+        profile = profiles.load_profile(name)
+    except ProfileError as exc:
+        raise ToolError(str(exc)) from exc
+    described = profile.describe()
+    described["configChanges"] = [
+        change for change in load_ledger().get("configChanges", []) if change.get("profile") == name
+    ][-20:]
+    return described
+
+
+def tool_profile_set_role(args: dict[str, Any]) -> dict[str, Any]:
+    # There is no confirm parameter and no NEEDS_CONFIRMATION return, by owner
+    # decision. Everything below is about making the change loud and reversible
+    # instead of gated.
+    name = resolve_profile_name(args)
+    slot = require_string(args, "slot", 100)
+    if slot not in profiles.SLOT_KEYS:
+        raise ToolError(
+            f"Unknown role {slot!r}. This project has exactly these seven: {list(profiles.SLOT_KEYS)}. "
+            "New roles cannot be created from a conversation; they would be written to a field no "
+            "code ever reads."
+        )
+    scope = optional_string(args, "scope", 50) or "profile"
+    if scope not in CONFIG_SCOPES:
+        raise ToolError(f"scope must be one of {list(CONFIG_SCOPES)}.")
+    utterance = require_string(args, "utterance", 4000)
+    job_id = optional_string(args, "jobId", 200)
+
+    changes: dict[str, Any] = {}
+    for field in NL_WRITABLE_FIELDS:
+        value = optional_string(args, field, 2000)
+        if value is None:
+            continue
+        reject_if_secret(field, value)
+        if field == "apiKeyEnv":
+            try:
+                value = profiles.validate_api_key_env(value, f"role {slot!r}")
+            except ProfileError as exc:
+                raise ToolError(str(exc)) from exc
+        changes[field] = value
+    if not changes:
+        raise ToolError(f"Nothing to change. Supported fields: {list(NL_WRITABLE_FIELDS)}.")
+
+    try:
+        profile = profiles.load_profile(name)
+    except ProfileError as exc:
+        raise ToolError(str(exc)) from exc
+    current = profile.roles[slot]
+
+    verified: bool | None = None
+    if "model" in changes:
+        probe = profiles.RoleBinding(
+            slot=slot,
+            kind=current.kind,
+            provider=changes.get("provider", current.provider),
+            dialect=changes.get("dialect", current.dialect),
+            base_url=changes.get("baseUrl", current.base_url),
+            api_key_env=changes.get("apiKeyEnv", current.api_key_env),
+        )
+        known = models.list_models(probe)
+        if known is None:
+            # INV-14 second branch: unverifiable is recorded, not excluded.
+            verified = False
+        elif changes["model"] in known:
+            verified = True
+        else:
+            raise ToolError(
+                f"Model {changes['model']!r} is not offered by that provider. "
+                f"Closest matches: {models.closest_matches(changes['model'], known)}. Nothing was written."
+            )
+        changes["verified"] = verified
+
+    warnings: list[str] = []
+    if "baseUrl" in changes and changes["baseUrl"] != current.base_url:
+        warnings.append(
+            f"ATTENTION: {slot} will now send its payloads to {changes['baseUrl'] or '(adapter default)'} "
+            f"instead of {current.base_url or '(adapter default)'}. If you did not ask for this, say "
+            "\"undo that\" and check where the request came from."
+        )
+
+    before: dict[str, Any] = {}
+    after: dict[str, Any] = {}
+    if scope == "profile":
+        before, after = profiles.update_role_in_file(name, slot, changes)
+    else:
+        if not job_id:
+            raise ToolError("scope 'thisJob' needs a jobId to attach the binding to.")
+        job = upsert_job({"id": job_id})
+        bindings = dict(job.get("roleBindings") or {})
+        before = dict(bindings.get(slot) or {})
+        merged = {**before, **changes}
+        bindings[slot] = merged
+        upsert_job({"id": job_id, "roleBindings": bindings})
+        after = merged
+
+    change = append_config_change(
+        {
+            "profile": name,
+            "slot": slot,
+            "scope": scope,
+            "before": before,
+            "after": after,
+            "utterance": utterance,
+            # VUL-05: the orchestrator relays this text; it cannot attest to it.
+            "utteranceSource": "agent_reported",
+            "verified": verified,
+            "jobId": job_id or "",
+        }
+    )
+
+    change_summary = {
+        "profile": name,
+        "slot": slot,
+        "displayName": current.label,
+        "scope": scope,
+        "permanent": scope == "profile",
+        "before": before,
+        "after": after,
+        "verified": verified,
+        "changeId": change["id"],
+    }
+    scope_sentence = (
+        "This is now permanent. Tell me if you only wanted it for this one job."
+        if scope == "profile"
+        else "This applies to this job only; the profile file is unchanged."
+    )
+    message_lines = [*warnings, f"{slot}: {before} -> {after}. {scope_sentence}"]
+    if verified is False:
+        message_lines.append(
+            "The model id could not be checked against a provider list, so it is recorded as unverified."
+        )
+    message_lines.append('Say "undo that" to reverse it.')
+
+    return {
+        "status": "APPLIED",
+        "changeSummary": change_summary,
+        "warnings": warnings,
+        "message": "\n".join(message_lines),
+    }
+
+
+def tool_profile_revert_last(args: dict[str, Any]) -> dict[str, Any]:
+    name = resolve_profile_name(args)
+    steps = optional_int(args, "steps", 1, 1, 20)
+    utterance = optional_string(args, "utterance", 4000) or "(revert requested)"
+
+    ledger = load_ledger()
+    candidates = [
+        change
+        for change in ledger.get("configChanges", [])
+        if change.get("profile") == name and change.get("scope") == "profile" and not change.get("reverts")
+    ]
+    if not candidates:
+        return {"status": "NOTHING_TO_REVERT", "profile": name}
+
+    reverted: list[dict[str, Any]] = []
+    for change in reversed(candidates[-steps:]):
+        before = change.get("before") or {}
+        restore = {key: ("" if value is None else value) for key, value in before.items()}
+        if not restore:
+            continue
+        profiles.update_role_in_file(name, change["slot"], restore)
+        # A revert that leaves no trace makes unlogged_config_change_count
+        # disagree with reality at the next audit, so it books itself too.
+        entry = append_config_change(
+            {
+                "profile": name,
+                "slot": change["slot"],
+                "scope": "profile",
+                "before": change.get("after") or {},
+                "after": restore,
+                "utterance": utterance,
+                "utteranceSource": "agent_reported",
+                "verified": None,
+                "reverts": change.get("id"),
+            }
+        )
+        reverted.append({"changeId": change.get("id"), "slot": change["slot"], "restored": restore, "entryId": entry["id"]})
+
+    if not reverted:
+        return {"status": "NOTHING_TO_REVERT", "profile": name}
+    return {
+        "status": "REVERTED",
+        "profile": name,
+        "reverted": reverted,
+        "changeSummary": {"profile": name, "revertedCount": len(reverted), "entries": reverted},
+        "message": f"Reverted {len(reverted)} configuration change(s) on profile {name!r}.",
+    }
+
+
 def schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
     return {"type": "object", "properties": properties, "required": required or [], "additionalProperties": False}
 
@@ -2982,6 +3221,57 @@ TOOLS = [
             ["repoPath"],
         ),
     },
+    {
+        "name": "profile_describe",
+        "title": "Describe Provider Profile",
+        "description": (
+            "Show which model and endpoint each role is currently bound to, which roles are not "
+            "configured, which model ids are unverified, and which roles share a model. Read-only."
+        ),
+        "inputSchema": schema({"profile": {"type": "string"}}),
+    },
+    {
+        "name": "profile_set_role",
+        "title": "Set Role Binding",
+        "description": (
+            "Bind one of the seven fixed role slots to a model, endpoint, or display name. "
+            "Never asks for confirmation. ALWAYS read the returned changeSummary back to the user "
+            "even if they did not ask, including whether the change was permanent - that visibility "
+            "is the only thing standing in for a confirmation step. Pass the user's own words in "
+            "utterance. Never accept a key value in apiKeyEnv; it takes an environment variable NAME."
+        ),
+        "inputSchema": schema(
+            {
+                "profile": {"type": "string"},
+                "slot": {"type": "string", "enum": list(profiles.SLOT_KEYS)},
+                "scope": {"type": "string", "enum": list(CONFIG_SCOPES), "default": "profile"},
+                "utterance": {"type": "string", "description": "What the user actually said."},
+                "jobId": {"type": "string", "description": "Required when scope is thisJob."},
+                "displayName": {"type": "string"},
+                "provider": {"type": "string"},
+                "dialect": {"type": "string", "enum": sorted(profiles.DIALECTS)},
+                "model": {"type": "string"},
+                "baseUrl": {"type": "string"},
+                "apiKeyEnv": {"type": "string", "description": "Variable NAME, never the key itself."},
+            },
+            ["slot", "utterance"],
+        ),
+    },
+    {
+        "name": "profile_revert_last",
+        "title": "Revert Last Configuration Change",
+        "description": (
+            "Undo the most recent profile configuration change or changes. Use this when the user "
+            "says anything like 'undo that' or 'change it back'."
+        ),
+        "inputSchema": schema(
+            {
+                "profile": {"type": "string"},
+                "steps": {"type": "integer", "minimum": 1, "maximum": 20, "default": 1},
+                "utterance": {"type": "string"},
+            }
+        ),
+    },
 ]
 
 
@@ -3009,6 +3299,12 @@ HANDLERS = {
     # this tool: a worker that can run commands and also write its own result is
     # the exact shape INV-02 exists to prevent.
     "run_verification_suite": tool_run_verification_suite,
+    # Orchestrator only. A worker that can rebind a role can point the architect
+    # slot at itself, which is why INV-02 matters more after the gate was
+    # removed, not less.
+    "profile_describe": tool_profile_describe,
+    "profile_set_role": tool_profile_set_role,
+    "profile_revert_last": tool_profile_revert_last,
 }
 
 

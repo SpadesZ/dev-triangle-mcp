@@ -268,6 +268,98 @@ Have Jules add the missing tests, then have Antigravity run local verification,
 then give me a final merge/no-merge recommendation.
 ```
 
+## Changing Models By Talking
+
+You never have to open a JSON file to change which model a role uses. Tell the
+orchestrator and it calls `profile_set_role` for you.
+
+```text
+You:  Switch the architect to <model id>.
+Tool: architect: {'model': ''} -> {'model': '<model id>'}. This is now permanent.
+      Tell me if you only wanted it for this one job.
+      Say "undo that" to reverse it.
+```
+
+Four things this deliberately does, and why.
+
+**It never asks you to confirm.** Configuring your own tools is your business.
+What replaces the confirmation is that the change is always reported back, even
+when you did not ask for a report. If you ever see a change summary for
+something you did not request, that is the signal — something in a repo file or
+an error log talked the orchestrator into it. Say "undo that".
+
+**It refuses to take your key.**
+
+```text
+You:  My key is ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+Tool: Refusing to write apiKeyEnv: it contains something that matches
+      ['github_pat']. Do not paste a key into the conversation. Set it in an
+      environment variable of your own choosing, then tell me that variable's
+      NAME. Nothing was written.
+```
+
+Nothing is written when this happens. The reason for the refusal is that a key
+said out loud ends up in three places at once — the conversation log, the MCP
+transport, and the config file — and this project can only ever clean up the
+third. Blocking at the write is already late; it is blocked loudly so you know
+that message needs dealing with.
+
+Do this instead:
+
+```powershell
+$env:MY_ARCHITECT_KEY = "..."
+```
+
+```text
+You:  The architect's key is in MY_ARCHITECT_KEY.
+```
+
+**It will not invent a model id.** Ask for "the newest one" and, if the provider
+can list its models, you get the real list back rather than a plausible-looking
+guess:
+
+```text
+Tool: Model 'the-newest-one-probably' is not offered by that provider.
+      Closest matches: [...]. Nothing was written.
+```
+
+If the provider cannot list its models, the id is written but recorded as
+unverified, and `profile_describe` keeps showing it that way. "Could not check"
+is never quietly upgraded to "checked".
+
+**It only knows seven roles.** Ask for an eighth and it says so, rather than
+writing a field nothing will ever read:
+
+```text
+You:  Add a reviewer role.
+Tool: Unknown role 'reviewer'. This project has exactly these seven:
+      ['orchestrator', 'contextBroker', 'architect', 'cloudWorker', 'verifier',
+       'diagnostician', 'reporter']
+```
+
+### Undoing
+
+```text
+You:  Undo that.
+Tool: Reverted 1 configuration change(s) on profile 'example'.
+```
+
+The undo is itself recorded, so the change log stays complete in both
+directions.
+
+### Seeing what is bound right now
+
+```text
+You:  What is each role using?
+```
+
+`profile_describe` answers with every slot, which ones are unconfigured, which
+model ids are unverified, which roles share a model, and the recent change
+history including the words that caused each change.
+
+That last part is the point of recording your own phrasing: three weeks later,
+"why was it using that model" has an answer.
+
 ## What To Check When It Feels Stuck
 
 First run:

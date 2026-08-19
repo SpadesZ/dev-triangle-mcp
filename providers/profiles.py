@@ -460,6 +460,57 @@ def _replace(binding: RoleBinding, **changes: Any) -> RoleBinding:
 # ---------------------------------------------------------------------------
 
 
+WRITABLE_ROLE_FIELDS = ("displayName", "provider", "dialect", "model", "baseUrl", "apiKeyEnv", "verified")
+
+
+def read_role_raw(profile_name: str, slot: str) -> dict[str, Any]:
+    """Return the on-disk role object, so a change can record what it replaced."""
+    path = profile_path(profile_name)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    role = raw.get("roles", {}).get(slot)
+    if not isinstance(role, dict):
+        raise ProfileError(f"Profile {profile_name!r} has no role {slot!r}.")
+    return {key: value for key, value in role.items() if key in WRITABLE_ROLE_FIELDS}
+
+
+def update_role_in_file(profile_name: str, slot: str, changes: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Write one slot's binding back to its profile file.
+
+    Returns (before, after) so the caller can report and, later, reverse it.
+    Only the fields in WRITABLE_ROLE_FIELDS are touched: kind, command, server
+    and note describe the adapter, not the user's choice, and changing them from
+    a conversation would point the slot at code that does not exist.
+    """
+    if slot not in SLOT_KEYS:
+        raise ProfileError(
+            f"Unknown role slot {slot!r}. This project has exactly these seven: {list(SLOT_KEYS)}."
+        )
+    unsupported = sorted(set(changes) - set(WRITABLE_ROLE_FIELDS))
+    if unsupported:
+        raise ProfileError(f"Fields {unsupported} cannot be set this way; writable fields are {list(WRITABLE_ROLE_FIELDS)}.")
+
+    path = profile_path(profile_name)
+    if not path.exists():
+        raise ProfileNotFound(
+            f"Profile {profile_name!r} not found at {path}. Available profiles: {list_profiles() or 'none'}."
+        )
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    roles = raw.get("roles")
+    if not isinstance(roles, dict) or slot not in roles:
+        raise ProfileError(f"Profile {profile_name!r} has no role {slot!r}.")
+
+    role = roles[slot]
+    before = {key: role.get(key) for key in changes}
+    role.update(changes)
+
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+    after = {key: role.get(key) for key in changes}
+    return before, after
+
+
 def describe_profile(profile: Profile) -> dict[str, Any]:
     roles = [binding.to_dict() for binding in profile.roles.values()]
 
