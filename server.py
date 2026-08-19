@@ -57,6 +57,8 @@ RESULT_DIR = DEV_TRIANGLE_HOME / "antigravity-results"
 LOG_DIR = DEV_TRIANGLE_HOME / "logs"
 ANTIGRAVITY_DEFAULT_PROMPT_ARG = "-p"
 ANTIGRAVITY_RESULT_MARKER = "DEV_TRIANGLE_RESULT_READY"
+# NOTE(NOTE-001): This is a deny list, not a source of defaults. Values listed
+# here are dropped so agy picks its own model; see docs/NOTES.md.
 ANTIGRAVITY_LEGACY_UNSAFE_MODELS = {"Gemini 3.5 Flash (Medium)"}
 ANTIGRAVITY_DB_SCAN_LIMIT = 8
 UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
@@ -1176,6 +1178,9 @@ def configured_antigravity_agy_model() -> tuple[str, str | None]:
     model = os.environ.get("ANTIGRAVITY_AGY_MODEL", "").strip()
     if not model:
         return "", None
+    # NOTE(NOTE-001): Dropping the value is the point. Returning it, or
+    # substituting another model name here, re-creates the silent default that
+    # INV-12 forbids.
     if model in ANTIGRAVITY_LEGACY_UNSAFE_MODELS:
         return "", f"Ignored legacy unsafe ANTIGRAVITY_AGY_MODEL value: {model}"
     return model, None
@@ -1225,6 +1230,8 @@ def build_antigravity_command_line(
             command_line.append("--new-project")
         if model:
             command_line += ["--model", model]
+        # NOTE(NOTE-002): prompt enters here and nowhere else. Do not append it
+        # again before the return; agy would receive it twice.
         command_line += ["--print", prompt, "--print-timeout", timeout]
         if os.environ.get("ANTIGRAVITY_AGY_SKIP_PERMISSIONS", "1") not in {"0", "false", "False"}:
             command_line.append("--dangerously-skip-permissions")
