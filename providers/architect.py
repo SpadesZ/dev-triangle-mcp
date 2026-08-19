@@ -142,6 +142,8 @@ def create_implementation(
         "shadow": brief is None,
         "tokensIn": int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
         "tokensOut": int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
+        # NOTE(NOTE-010): false for a cli agent. Zero would read as free.
+        "tokensAvailable": bool(usage),
         # INV-15(c)
         "targetBaseUrl": response["targetBaseUrl"],
         "targetModel": response["targetModel"],

@@ -218,6 +218,42 @@ JOB_SECTION_FACTORIES = {
 }
 
 
+def dispatch_record(binding: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """One line of "who did what, and could we measure it".
+
+    tokensAvailable is the load-bearing field. A cli agent does not report token
+    counts, and recording zero would make the usage summary read "this route was
+    free" when it is quietly spending a subscription (docs/NOTES.md NOTE-010).
+    """
+    return {
+        "at": now_iso(),
+        "slot": binding.slot,
+        "kind": binding.kind,
+        "displayName": binding.label,
+        "targetBaseUrl": payload.get("targetBaseUrl", ""),
+        "targetModel": payload.get("targetModel", ""),
+        "tokensAvailable": bool(payload.get("tokensAvailable")),
+        "tokensIn": int(payload.get("tokensIn") or 0),
+        "tokensOut": int(payload.get("tokensOut") or 0),
+    }
+
+
+def merge_dispatch(job: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    """Append a dispatch record and roll it into job.cost."""
+    view = job_with_defaults(job)
+    dispatches = [*view.get("dispatches", []), record]
+    cost = dict(view["cost"])
+    cost["calls"] = int(cost.get("calls", 0)) + 1
+    if record["tokensAvailable"]:
+        cost["tokensIn"] = int(cost.get("tokensIn", 0)) + record["tokensIn"]
+        cost["tokensOut"] = int(cost.get("tokensOut", 0)) + record["tokensOut"]
+    else:
+        # Count the calls we could not price, so the summary can say how much of
+        # the picture is missing rather than implying it is complete.
+        cost["callsWithoutTokens"] = int(cost.get("callsWithoutTokens", 0)) + 1
+    return {"dispatches": dispatches, "cost": cost}
+
+
 def job_with_defaults(job: dict[str, Any]) -> dict[str, Any]:
     """Return a reader's view of a job with the v2 sections present.
 
@@ -231,6 +267,7 @@ def job_with_defaults(job: dict[str, Any]) -> dict[str, Any]:
     view.setdefault("stage", "")
     view.setdefault("profile", "")
     view.setdefault("roleBindings", {})
+    view.setdefault("dispatches", [])
     for name, factory in JOB_SECTION_FACTORIES.items():
         section = view.get(name)
         if not isinstance(section, dict):
@@ -2337,6 +2374,84 @@ def tool_mcp_health_check(args: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def tool_usage_summary(args: dict[str, Any]) -> dict[str, Any]:
+    """Roll up who did the work and, where it can be measured, what it cost.
+
+    Calls and tokens are reported in separate columns on purpose. A cli agent
+    spends a subscription without reporting token counts, and folding that into
+    a single "tokens" number as zero would make the cheapest-looking row the one
+    nobody can actually see the cost of.
+    """
+    profile_filter = optional_string(args, "profile", 100)
+    since_days = optional_int(args, "sinceDays", 30, 1, 3650)
+    cutoff = time.time() - since_days * 86400
+
+    groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+    jobs_counted = 0
+    for stored in load_ledger().get("jobs", []):
+        job = job_with_defaults(stored)
+        if profile_filter and job.get("profile") != profile_filter:
+            continue
+        dispatches = job.get("dispatches") or []
+        if not dispatches:
+            continue
+        jobs_counted += 1
+        for record in dispatches:
+            try:
+                at = datetime.fromisoformat(str(record.get("at", ""))).timestamp()
+            except ValueError:
+                at = cutoff
+            if at < cutoff:
+                continue
+            key = (record.get("slot", ""), record.get("kind", ""), record.get("targetModel", ""))
+            row = groups.setdefault(
+                key,
+                {
+                    "slot": key[0],
+                    "kind": key[1],
+                    "targetModel": key[2],
+                    "calls": 0,
+                    "callsWithTokens": 0,
+                    "tokensIn": 0,
+                    "tokensOut": 0,
+                    "tokensAvailable": True,
+                },
+            )
+            row["calls"] += 1
+            if record.get("tokensAvailable"):
+                row["callsWithTokens"] += 1
+                row["tokensIn"] += int(record.get("tokensIn") or 0)
+                row["tokensOut"] += int(record.get("tokensOut") or 0)
+            else:
+                # One unmeasured call makes the whole row's token total partial.
+                # Reporting it as complete would understate spend.
+                row["tokensAvailable"] = False
+
+    rows = sorted(groups.values(), key=lambda item: item["calls"], reverse=True)
+    unmeasured = [row for row in rows if not row["tokensAvailable"]]
+    return {
+        "sinceDays": since_days,
+        "profile": profile_filter or "(all)",
+        "jobsCounted": jobs_counted,
+        "byRole": rows,
+        "totalCalls": sum(row["calls"] for row in rows),
+        "totalTokensIn": sum(row["tokensIn"] for row in rows),
+        "totalTokensOut": sum(row["tokensOut"] for row in rows),
+        "rowsWithoutTokenData": [row["slot"] for row in unmeasured],
+        "message": (
+            f"{sum(row['calls'] for row in rows)} dispatch(es) across {jobs_counted} job(s) in the last "
+            f"{since_days} day(s)."
+            + (
+                f" Token totals exclude {sum(row['calls'] - row['callsWithTokens'] for row in unmeasured)} "
+                f"call(s) on {[row['slot'] for row in unmeasured]}, which run through a CLI and do not "
+                "report token counts. Those calls are not free - they spend a subscription."
+                if unmeasured
+                else ""
+            )
+        ),
+    }
+
+
 def tool_job_list(args: dict[str, Any]) -> dict[str, Any]:
     ledger = load_ledger()
     provider = optional_string(args, "provider", 100)
@@ -3147,6 +3262,7 @@ def tool_dispatch_context_brief(args: dict[str, Any]) -> dict[str, Any]:
         )
         skeleton["contextBrief"] = brief
         job = upsert_job(skeleton)
+    job = upsert_job({"id": job["id"], **merge_dispatch(job, dispatch_record(binding, brief))})
 
     destination = dispatch_destination(binding, brief)
     return {
@@ -3296,6 +3412,7 @@ def tool_dispatch_architect(args: dict[str, Any]) -> dict[str, Any]:
         "shadow": shadow_record,
     }
     saved = upsert_job({"id": job_id, "implementation": implementation, "stage": "IMPLEMENTATION"})
+    saved = upsert_job({"id": job_id, **merge_dispatch(saved, dispatch_record(binding, primary))})
     destination = dispatch_destination(binding, implementation)
     return {
         "status": "OK",
@@ -3480,10 +3597,8 @@ def tool_self_heal(args: dict[str, Any]) -> dict[str, Any]:
         return {"status": "IMPLEMENTATION_REJECTED", "jobId": job_id, "message": str(exc)}
 
     attempts += 1
-    cost = dict(job["cost"])
-    cost["calls"] = int(cost.get("calls", 0)) + 1
-    cost["tokensIn"] = int(cost.get("tokensIn", 0)) + int(retry.get("tokensIn", 0))
-    cost["tokensOut"] = int(cost.get("tokensOut", 0)) + int(retry.get("tokensOut", 0))
+    merged = merge_dispatch(job, dispatch_record(binding, retry))
+    cost = merged["cost"]
 
     entry: dict[str, Any] = {
         "at": now_iso(),
@@ -3522,6 +3637,7 @@ def tool_self_heal(args: dict[str, Any]) -> dict[str, Any]:
             "id": job_id,
             "selfHeal": {"attempts": attempts, "maxAttempts": budget, "history": history},
             "cost": cost,
+            "dispatches": merged["dispatches"],
             "stage": "GATE",
             "status": "RUNNING" if healed else ("BLOCKED" if attempts >= budget else "RUNNING"),
         }
@@ -3928,6 +4044,22 @@ TOOLS = [
         ),
     },
     {
+        "name": "usage_summary",
+        "title": "Usage By Role",
+        "description": (
+            "Roll up dispatches by role, kind and model so you can see which vendor is carrying the "
+            "load. Calls and tokens are separate columns: CLI-backed roles spend a subscription "
+            "without reporting token counts, so their rows are marked tokensAvailable false rather "
+            "than showing zero. Read rowsWithoutTokenData back to the user - a zero would look free."
+        ),
+        "inputSchema": schema(
+            {
+                "profile": {"type": "string"},
+                "sinceDays": {"type": "integer", "minimum": 1, "maximum": 3650, "default": 30},
+            }
+        ),
+    },
+    {
         "name": "profile_describe",
         "title": "Describe Provider Profile",
         "description": (
@@ -4030,6 +4162,7 @@ HANDLERS = {
     "dispatch_architect": tool_dispatch_architect,
     "apply_patch": tool_apply_patch,
     "self_heal": tool_self_heal,
+    "usage_summary": tool_usage_summary,
     "profile_describe": tool_profile_describe,
     "profile_activate": tool_profile_activate,
     "profile_set_role": tool_profile_set_role,
