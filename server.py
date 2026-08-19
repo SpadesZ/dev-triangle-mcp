@@ -42,6 +42,15 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
+# Secret detection lives in one module so the publish scanner and every outbound
+# payload check share a single rule set. See docs/SAI.md W08.
+from providers.redaction import (
+    SECRET_CONTENT_PATTERNS,
+    SENSITIVE_FILE_NAME_PATTERNS,
+    looks_like_secret_value,
+    redact_payload,
+)
+
 
 SERVER_NAME = "dev-triangle-mcp"
 SERVER_VERSION = "0.2.0"
@@ -349,25 +358,10 @@ SCAN_EXCLUDED_DIRS = {
     "logs",
 }
 
-SENSITIVE_FILE_NAME_PATTERNS = [
-    re.compile(r"^\.env($|\.)", re.IGNORECASE),
-    re.compile(r"^id_rsa($|\.)", re.IGNORECASE),
-    re.compile(r"^id_dsa($|\.)", re.IGNORECASE),
-    re.compile(r"^id_ed25519($|\.)", re.IGNORECASE),
-    re.compile(r".*\.pem$", re.IGNORECASE),
-    re.compile(r".*\.p12$", re.IGNORECASE),
-    re.compile(r".*\.pfx$", re.IGNORECASE),
-]
-
-SECRET_CONTENT_PATTERNS = [
-    ("jules_api_key", re.compile(r"\bJULES_API_KEY\s*=\s*['\"]?[^'\"\s]{8,}", re.IGNORECASE)),
-    ("openai_api_key", re.compile(r"\bOPENAI_API_KEY\s*=\s*['\"]?[^'\"\s]{8,}", re.IGNORECASE)),
-    ("anthropic_api_key", re.compile(r"\bANTHROPIC_API_KEY\s*=\s*['\"]?[^'\"\s]{8,}", re.IGNORECASE)),
-    ("github_token", re.compile(r"\b(GITHUB_TOKEN|GH_TOKEN)\s*=\s*['\"]?[^'\"\s]{8,}", re.IGNORECASE)),
-    ("github_pat", re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b")),
-    ("jules_key_shape", re.compile(r"\bAQ\.[A-Za-z0-9_-]{20,}\b")),
-    ("generic_private_key", re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----")),
-]
+# SENSITIVE_FILE_NAME_PATTERNS and SECRET_CONTENT_PATTERNS now live in
+# providers/redaction.py. They are imported at the top of this file rather than
+# redefined here: prepare_jules_repo and every outbound payload check must not
+# be able to drift apart. Do not re-inline them.
 
 
 def run_native(command: list[str], cwd: Path | None = None, timeout: int = 60, allow_failure: bool = False) -> dict[str, Any]:

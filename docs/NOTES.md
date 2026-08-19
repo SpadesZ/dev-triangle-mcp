@@ -21,6 +21,7 @@
 |---|---|---|
 | NOTE-001 | `ANTIGRAVITY_LEGACY_UNSAFE_MODELS` 是拒絕清單，不是預設值來源 | `INV-12` 靜默預設模型；`S4.8` 量尺的具名例外 |
 | NOTE-002 | agy `--print` 的 prompt 只傳一次 | agy CLI 引數契約 |
+| NOTE-003 | 秘密掃描的 `hits` 只回報位置與數量，永不回傳命中的原文 | `INV-04` 金鑰不得寫進 `jobs.json` |
 
 ---
 
@@ -53,3 +54,21 @@
   python -m pytest -q tests\test_antigravity_command_line.py::test_agy_print_passes_prompt_once
   ```
   突變：在 `agy_print` 分支的 `return` 前加一行 `command_line.append(prompt)` → **必須變紅**。
+
+---
+
+## NOTE-003 秘密掃描的 `hits` 只回報位置與數量，永不回傳命中的原文
+
+- **決策日期**：2026-08-19
+- **適用範圍**：`providers/redaction.py` 的 `scan_payload()` 與 `redact_payload()` 回傳的 `hits` 結構；所有把 `hits` 寫進 ledger、job summary 或工具回傳值的呼叫端。
+- **決策**：`hits` 的每一筆只含 `pattern`（規則名）、`count`、`firstOffset`、`matchedChars`。**不得**加入 `match`、`sample`、`excerpt`、`value` 之類欄位，即使只放前幾個字元也不行。
+- **原因**：`hits` 的用途是「告訴使用者外送被擋了、被什麼規則擋的」，而它會**跟著 job 一起寫進 `%USERPROFILE%\.dev-triangle\jobs.json`**，也會回到 Orchestrator 的對話上下文裡。
+  在錯誤報告裡放一小段命中內容是除錯時最自然的動作——**但這裡的命中內容依定義就是金鑰**。那等於偵測器本身成為外洩管道：本來只在記憶體裡待一瞬間的秘密，因為「被抓到了」而被永久寫進帳本，`INV-04`（金鑰不得寫進 `jobs.json`）當場破功。
+  截斷也沒用。金鑰的前 8 個字元足以辨識供應商與帳號，而且真正的洩漏往往只需要配上其他線索。
+- **驗證**：
+  ```powershell
+  python -m pytest -q tests\test_redaction.py::test_hits_never_echo_the_secret
+  ```
+  該測試把 canary 金鑰餵進 `redact_payload()`，再把 `hits` 整個序列化成 JSON，斷言 canary 的任何 12 字元以上片段都不在裡面。
+  突變：在 `scan_payload()` 的 hit dict 加一個 `"sample": matches[0].group(0)[:12]` → **必須變紅**。
+- **維護邊界**：要除錯「為什麼這段被擋」時，正確做法是在本機重跑 `redact_payload()` 自己看，**不是**讓工具把內容送回來。
