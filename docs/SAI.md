@@ -105,6 +105,22 @@
 | 25 | `W13 步驟 8(c)` 承諾「去向顯示要寫進 W05/W06 驗收」，但 W05/W06 完成標準未承接 | **在 `W05` 與 `W06` 的完成標準與突變測試中完整落實 `INV-15(c)` 載體**：強制輸出 `targetBaseUrl` 與 `targetModel`，並增設 `test_dispatch_must_include_target_destination` 突變紅燈，徹底封閉 `F17` 最後一道可見性防線 | 審查穿刺洞 1（自省補完） |
 | 26 | `I2` 驗收表中有 4 條地基指令標「本輪未實跑」，`S4.5` 可失敗性未經驗證 | **在實體專案 `D:\dev-triangle-mcp` 實跑 4 條地基指令並記錄真實 Exit Code**：`protocol_smoke`（Exit 0，19 tools）、`report_server_smoke`（Exit 0，2 tools）、`smoke.ps1`（Exit 0，pass）、`doctor.ps1`（Exit 1，因 codex config 缺失精確變紅，證實 `S4.5` 非恆真量尺） | 審查穿刺洞 2（實機執行） |
 
+### 0.0.5 施工實測推翻的條文（2026-08-19 施工輪，依 `W11` 步驟 5）
+
+**被推翻的是事實記載，不是裁決。** 所有 `INV-*` 與 `I4` gate 的結論全部維持。
+
+| # | 本檔原記載 | 施工實測 | 處置 |
+|---|---|---|---|
+| 27 | `S6`：`server.py:1131`／`:1181` 兩處硬編碼模型 fallback，`S4.9` 現況值 = 2 | **施工前就已不存在**。線上安裝位置的分支早已改寫成 `configured_antigravity_agy_model()` | `W01` 步驟 9 由「修既有違規」改為「接上 profile 解析鏈」。殘留的唯一模型字面值是拒絕清單，見 `NOTE-001` |
+| 28 | `S6`：量測對象為 `D:\dev-triangle-mcp` `main` @ `a982663` | **D: 不是本機實際在跑的那一份**。`~/.codex/config.toml` 指向 `C:\Users\Franky Kuo\DevTools\dev-triangle-mcp`，兩者分岔 386 行 | 施工第一步先合併（commit `ea52d12`），13 處衝突全數採線上那一側 |
+| 29 | `S4.8` 掃描規則：排除 `docs/SAI.md` 即可歸零 | 實測仍命中 5 處，全部是 `ANTIGRAVITY_LEGACY_UNSAFE_MODELS` 拒絕清單及其說明文件 | 改為「**同一行**出現三個識別字之一才算例外」，寫進 `NOTE-001`，由 `tests/test_repo_integrity.py` 執行。**不得整檔排除**——那等於把量尺關掉 |
+| 30 | `S4.9` 量法：`(model\|baseUrl\|provider).*\bor\b` 的字面 grep | 在乾淨程式碼上**誤殺 2 處**（job id 前綴的預設值、警示訊息裡的顯示字串），兩者都不決定任何行為 | 收窄到「指派與 `return` 位置」，並把兩個被放行的形狀逐字寫進測試，見 `NOTE-008` |
+| 31 | `I0.4`：pytest 裝在哪個直譯器「本輪未確認」 | `python` 3.12.10 有 pytest 9.1.1，`py -3.10` 有 9.0.3，**兩邊都有** | 結案。CI 用 3.12 |
+
+**施工輪新增 `NOTE-001`～`NOTE-008`**，每則都有同號完整條目與可執行的驗證指令，由 `tests/test_repo_integrity.py` 機械檢查「禁止失效引用」。
+
+⚠️ **`C6` 尚未達成，且本輪不得宣稱達成**：`W05`／`W06` 的所有測試都替換掉傳輸層，**從未對真實端點送出過任何請求**。`docs/PROVIDERS.md` 的 profile 狀態表因此維持原狀（`INV-10`）。
+
 ---
 
 ## 0. 這份文件是什麼、不是什麼

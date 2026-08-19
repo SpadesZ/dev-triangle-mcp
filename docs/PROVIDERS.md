@@ -63,6 +63,71 @@ The project should not advertise a profile as stable until it has:
 - Protocol smoke tests.
 - A real local or cloud validation path, not only mocks.
 
+### Where The Broker → Architect Route Actually Stands
+
+The role-binding mechanism landed in the 2026-08-19 upgrade. The route itself is
+**not** validated, and this table is deliberately not being changed to say
+otherwise. Checked against the six conditions above:
+
+| # | Condition | Status | Evidence |
+| --- | --- | --- | --- |
+| 1 | Configuration examples | ✅ | `config/providers.example.json`, all fields blank |
+| 2 | Provider detection | ✅ | `providers/context_broker.py::detect`, `mcp_health_check` profile block |
+| 3 | Task creation / handoff | ✅ | `dispatch_context_brief`, `dispatch_architect`, `apply_patch` |
+| 4 | Result collection | ✅ | `job.contextBrief` and `job.implementation` in the ledger |
+| 5 | Protocol smoke tests | ✅ | `tests/test_context_broker.py`, `tests/test_apply_patch.py`, in CI |
+| 6 | **A real path, not only mocks** | ❌ **Not met** | Every test substitutes `providers.http.chat`. No request has ever been sent to a real endpoint |
+
+**Condition 6 is the whole point of the list.** Five green boxes and a mocked
+sixth is precisely the state the "not only mocks" wording exists to stop anyone
+from rounding up. Until someone configures a real model and endpoint and runs the
+route end to end, the honest description of Broker → Architect is
+"mechanism complete, route unproven".
+
+The parts that *are* validated against real execution are the verification runner
+and the quality gate: on 2026-08-19 the `default` suite ran three real commands
+against this repository and returned exit code 0 in 13.79 seconds, and a job
+carrying only an agent's claim was downgraded to `NEEDS_REVIEW` while the same
+job with machine evidence was allowed to reach `SUCCESS`.
+
+## Choosing Your Own Names And Models
+
+Every role's display name, model, endpoint, and key variable is yours to set.
+This project ships no defaults for any of them — see `docs/SAI.md` A4 for the
+full rules, and `config/README.md` for the field-by-field reference.
+
+The short version:
+
+```text
+slot key                  fixed by this project   renaming it silently breaks the role
+displayName               yours                   any text, any language, safe to change
+model / baseUrl / apiKeyEnv   yours               this project never fills these in
+```
+
+Copy the template and select it:
+
+```powershell
+Copy-Item config\providers.example.json config\providers.mine.json
+$env:DEV_TRIANGLE_PROFILE = "mine"
+```
+
+Then either edit the file, or just say what you want:
+
+```text
+Switch the architect to <model id>.
+The architect's key is in MY_ARCHITECT_KEY.
+```
+
+Three behaviours worth knowing before you start:
+
+- **Empty is not a default, it is a refusal.** An `api` role with no `model`
+  returns `ROLE_NOT_CONFIGURED` and names the line to fill. It never picks one.
+- **`apiKeyEnv` takes a variable NAME, never a key.** A value that looks like a
+  credential is rejected at load time and at write time, and nothing is stored.
+- **Changes are never gated, and never silent.** Every change is reported back
+  with before → after and whether it was permanent, and `profile_revert_last`
+  undoes it in one sentence.
+
 ## Why Providers Matter
 
 Users may want to swap role providers:

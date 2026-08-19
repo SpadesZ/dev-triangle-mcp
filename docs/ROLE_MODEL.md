@@ -149,12 +149,24 @@ Implemented and validated today:
 - Report-only completion through `dev-triangle-report`.
 - Local job ledger through `jobs.json`.
 
+Added and validated on 2026-08-19:
+
+- Restricted verification suite runner producing real exit codes.
+- Quality gate refusing `SUCCESS` without machine evidence.
+- Provider profile loader with no default models.
+- Natural-language configuration bridge.
+- Outbound payload masking with a fail-closed repo allowlist.
+
 Documented but not fully implemented yet:
 
 - Claude as the orchestrator.
 - Gemini CLI as a code worker.
 - Generic provider registry.
 - Generic provider tool names.
+- **The Broker → Architect route against a real endpoint.** The adapters, the
+  guardrails and the ledger fields are all in place and tested, but every test
+  substitutes the transport. Nothing has been sent to a real model yet, so this
+  belongs in this list rather than the one above.
 
 ## Why Tool Names Still Mention Jules And Antigravity
 

@@ -8,12 +8,29 @@
 - Local productization scripts.
 - Windows and Ubuntu CI smoke tests.
 
-## v0.2 Provider Profiles
+## v0.2 Provider Profiles — done 2026-08-19
 
-- Add a provider profile loader.
-- Keep current `jules_*` and `antigravity_*` tools as compatibility wrappers.
-- Add schema validation for provider profiles.
-- Add tests for default profile loading.
+- ✅ Provider profile loader (`providers/profiles.py`).
+- ✅ `jules_*` and `antigravity_*` kept as compatibility wrappers.
+- ✅ Schema validation, including fixed slot keys and environment-variable-name
+  checking for `apiKeyEnv`.
+- ✅ Tests for profile loading. Note the deliberate reversal: there is no default
+  profile to test, because a missing profile raises and lists what exists rather
+  than falling back.
+
+## v0.2.1 Deterministic Verification — done 2026-08-19
+
+Reordered ahead of the worker adapters. The original sequence put model swapping
+first and quality gates last; the only thing actually broken was that nothing
+produced an exit code, and swapping models first would only have made an
+unmeasured pipeline run faster. See `docs/SAI.md` I1.
+
+- ✅ Restricted verification suite runner reading `.dev-triangle/verify.json`.
+- ✅ Quality gate: `SUCCESS` requires machine evidence and exit code 0.
+- ✅ Ledger schema v2, additive, old jobs not migrated.
+- ✅ Outbound payload masking, fail-closed.
+- ✅ Self-heal, one retry, hard-capped in code.
+- ✅ Natural-language configuration bridge.
 
 ## v0.3 Gemini CLI Worker Adapter
 
