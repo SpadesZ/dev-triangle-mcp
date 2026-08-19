@@ -28,10 +28,13 @@ Safety shape:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -494,31 +497,70 @@ SCAN_EXCLUDED_DIRS = {
 # be able to drift apart. Do not re-inline them.
 
 
+def child_process_spawn_kwargs() -> dict[str, Any]:
+    # Put the child in its own group/session so the whole tree can be signalled
+    # as a unit when it overruns.
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def kill_process_tree(proc: subprocess.Popen[str]) -> None:
+    # NOTE(NOTE-006): killing the parent is not enough.
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
 def run_native(command: list[str], cwd: Path | None = None, timeout: int = 60, allow_failure: bool = False) -> dict[str, Any]:
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             command,
             cwd=str(cwd) if cwd else None,
             text=True,
             encoding="utf-8",
             errors="replace",
-            capture_output=True,
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            **child_process_spawn_kwargs(),
         )
     except FileNotFoundError as exc:
         raise ToolError(f"Command not found: {command[0]}") from exc
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
+        kill_process_tree(proc)
+        try:
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
         raise ToolError(f"Command timed out after {timeout}s: {' '.join(command)}") from exc
 
     result = {
         "command": command,
         "exitCode": proc.returncode,
-        "stdout": proc.stdout,
-        "stderr": proc.stderr,
+        "stdout": stdout,
+        "stderr": stderr,
     }
     if proc.returncode != 0 and not allow_failure:
-        stderr = (proc.stderr or proc.stdout or "").strip()
-        raise ToolError(f"Command failed ({proc.returncode}): {' '.join(command)}\n{stderr[-2000:]}")
+        detail = (stderr or stdout or "").strip()
+        raise ToolError(f"Command failed ({proc.returncode}): {' '.join(command)}\n{detail[-2000:]}")
     return result
 
 
@@ -2302,6 +2344,308 @@ def tool_job_update(args: dict[str, Any]) -> dict[str, Any]:
     raise ToolError(f"No job or handoff found with id {job_id}.")
 
 
+# ---------------------------------------------------------------------------
+# Restricted verification suite runner (SAI W03)
+#
+# Three conditions make this acceptable, and all three are enforced below:
+#   1. Commands come from the target repo's own .dev-triangle/verify.json.
+#   2. Callers cannot supply commands; no parameter carries one.
+#   3. Every command, exit code and captured output lands in the ledger.
+# ---------------------------------------------------------------------------
+
+VERIFY_MANIFEST_RELATIVE = Path(".dev-triangle") / "verify.json"
+VERIFY_SUITE_TIMEOUT_DEFAULT = 900
+VERIFY_SUITE_TIMEOUT_MAX = 3600
+# W04 refuses to grant SUCCESS on evidence from anything else (VUL-04).
+PRIMARY_SUITE_NAMES = ("default", "primary")
+VERIFY_TOOL_ARGS = {"repoPath", "suiteName", "confirmSuite", "jobId"}
+
+
+def verify_manifest_path(repo_path: Path) -> Path:
+    return repo_path / VERIFY_MANIFEST_RELATIVE
+
+
+def tokenize_suite_command(value: str) -> list[str]:
+    # posix quoting rules, but backslash is not an escape character: on Windows
+    # a declared command is full of paths, and \t is a directory, not a tab.
+    lexer = shlex.shlex(value, posix=True)
+    lexer.whitespace_split = True
+    lexer.escape = ""
+    return list(lexer)
+
+
+def normalize_suite_command(value: Any, where: str) -> list[str]:
+    if isinstance(value, str):
+        tokens = tokenize_suite_command(value)
+    elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+        tokens = list(value)
+    else:
+        raise ToolError(f"{where}: each command must be a string or a list of strings.")
+    if not tokens:
+        raise ToolError(f"{where}: empty command.")
+    return tokens
+
+
+def git_head_sha(repo_path: Path) -> str:
+    try:
+        result = run_native(["git", "rev-parse", "HEAD"], cwd=repo_path, timeout=30, allow_failure=True)
+    except ToolError:
+        return ""
+    if result["exitCode"] != 0:
+        return ""
+    return (result["stdout"] or "").strip()
+
+
+def suite_fingerprint(manifest_text: str, head_sha: str) -> str:
+    # NOTE(NOTE-007): the commit is part of the identity being confirmed.
+    digest = hashlib.sha256()
+    digest.update(manifest_text.encode("utf-8"))
+    digest.update(b"\x00")
+    digest.update(head_sha.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def confirmed_suite_record(repo_path: Path, suite_name: str, fingerprint: str) -> dict[str, Any] | None:
+    ledger = load_ledger()
+    for record in ledger.get("verifySuites", []):
+        if (
+            record.get("repoPath") == str(repo_path)
+            and record.get("suiteName") == suite_name
+            and record.get("fingerprint") == fingerprint
+        ):
+            return record
+    return None
+
+
+def record_confirmed_suite(
+    repo_path: Path,
+    suite_name: str,
+    fingerprint: str,
+    commands: list[list[str]],
+    head_sha: str,
+) -> None:
+    ledger = load_ledger()
+    ledger.setdefault("verifySuites", [])
+    ledger["verifySuites"].append(
+        {
+            "repoPath": str(repo_path),
+            "suiteName": suite_name,
+            "fingerprint": fingerprint,
+            "gitHeadSha": head_sha,
+            "commands": [list(command) for command in commands],
+            "confirmedAt": now_iso(),
+        }
+    )
+    save_ledger(ledger)
+
+
+def run_suite_command(command: list[str], cwd: Path, timeout: int) -> dict[str, Any]:
+    """Run one declared command and capture what happened.
+
+    Never raises for a failing command: a non-zero exit is the evidence this
+    whole package exists to collect.
+    """
+    started = time.time()
+    executable = shutil.which(command[0], path=os.environ.get("PATH"))
+    if executable is None:
+        return {
+            "command": command,
+            "resolved": None,
+            "exitCode": None,
+            "status": "COMMAND_NOT_FOUND",
+            "stdout": "",
+            "stderr": f"Executable not found on PATH: {command[0]}",
+            "durationSec": 0.0,
+        }
+    resolved = [executable, *command[1:]]
+    try:
+        result = run_native(resolved, cwd=cwd, timeout=timeout, allow_failure=True)
+    except ToolError as exc:
+        # run_native already killed the process tree before raising.
+        return {
+            "command": command,
+            "resolved": resolved,
+            "exitCode": None,
+            "status": "TIMED_OUT",
+            "stdout": "",
+            "stderr": str(exc),
+            "durationSec": round(time.time() - started, 3),
+        }
+    return {
+        "command": command,
+        "resolved": resolved,
+        "exitCode": result["exitCode"],
+        "status": "RAN",
+        "stdout": result["stdout"] or "",
+        "stderr": result["stderr"] or "",
+        "durationSec": round(time.time() - started, 3),
+    }
+
+
+def load_verify_suite(repo_path: Path, suite_name: str) -> dict[str, Any]:
+    """Read and validate one suite from the repo's own manifest."""
+    manifest_path = verify_manifest_path(repo_path)
+    if not manifest_path.exists():
+        # Do not guess. Inferring a test command is how a repo that never had a
+        # verification story gets a green light it did not earn.
+        return {
+            "found": False,
+            "status": "NO_SUITE",
+            "manifestPath": str(manifest_path),
+            "message": (
+                "No .dev-triangle/verify.json in this repo. This tool only runs commands the repo "
+                "declares for itself; it does not infer them."
+            ),
+        }
+
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    try:
+        manifest = json.loads(manifest_text)
+    except json.JSONDecodeError as exc:
+        raise ToolError(f"{manifest_path} is not valid JSON: {exc}") from exc
+
+    suites = manifest.get("suites")
+    if not isinstance(suites, dict) or not suites:
+        raise ToolError(f"{manifest_path} must contain a non-empty suites object.")
+
+    suite = suites.get(suite_name)
+    if not isinstance(suite, dict):
+        return {
+            "found": False,
+            "status": "NO_SUITE",
+            "manifestPath": str(manifest_path),
+            "availableSuites": sorted(suites),
+            "message": f"Suite {suite_name!r} is not declared in {manifest_path}.",
+        }
+
+    raw_commands = suite.get("commands")
+    if not isinstance(raw_commands, list) or not raw_commands:
+        raise ToolError(f"{manifest_path}: suite {suite_name!r} must declare a non-empty commands array.")
+    commands = [
+        normalize_suite_command(item, f"{manifest_path} suite {suite_name!r}") for item in raw_commands
+    ]
+
+    timeout_sec = suite.get("timeoutSec", VERIFY_SUITE_TIMEOUT_DEFAULT)
+    if isinstance(timeout_sec, bool) or not isinstance(timeout_sec, int) or timeout_sec <= 0:
+        raise ToolError(f"{manifest_path}: suite {suite_name!r} timeoutSec must be a positive integer.")
+
+    return {
+        "found": True,
+        "manifestPath": str(manifest_path),
+        "manifestText": manifest_text,
+        "commands": commands,
+        "timeoutSec": min(timeout_sec, VERIFY_SUITE_TIMEOUT_MAX),
+    }
+
+
+def tool_run_verification_suite(args: dict[str, Any]) -> dict[str, Any]:
+    unknown = set(args) - VERIFY_TOOL_ARGS
+    if unknown:
+        # INV-01 in its implementation form. If a caller needs something new
+        # run, it goes in the repo's verify.json, not into an argument.
+        raise ToolError(
+            f"Unknown arguments: {sorted(unknown)}. This tool never accepts commands from callers; "
+            "the target repo declares them in .dev-triangle/verify.json."
+        )
+
+    repo_path = resolve_project_dir(require_string(args, "repoPath", 2000))
+    suite_name = optional_string(args, "suiteName", 200) or "default"
+    confirm_suite = optional_bool(args, "confirmSuite", False)
+    job_id = optional_string(args, "jobId", 200)
+
+    loaded = load_verify_suite(repo_path, suite_name)
+    if not loaded["found"]:
+        return {"status": "NO_SUITE", "repoPath": str(repo_path), "suiteName": suite_name, **loaded}
+
+    commands: list[list[str]] = loaded["commands"]
+    timeout_sec: int = loaded["timeoutSec"]
+    head_sha = git_head_sha(repo_path)
+    fingerprint = suite_fingerprint(loaded["manifestText"], head_sha)
+    already_confirmed = confirmed_suite_record(repo_path, suite_name, fingerprint)
+
+    if already_confirmed is None and not confirm_suite:
+        return {
+            "status": "NEEDS_CONFIRMATION",
+            "repoPath": str(repo_path),
+            "suiteName": suite_name,
+            "manifestPath": loaded["manifestPath"],
+            "fingerprint": fingerprint,
+            "gitHeadSha": head_sha,
+            "commands": [list(command) for command in commands],
+            "timeoutSec": timeout_sec,
+            "message": (
+                "These verification commands have not been confirmed at this commit. Read them, then "
+                "call again with confirmSuite: true. A repo you cloned can put anything in this file, "
+                "and the fingerprint covers both the file and the current HEAD."
+            ),
+        }
+
+    if already_confirmed is None:
+        record_confirmed_suite(repo_path, suite_name, fingerprint, commands, head_sha)
+
+    ensure_dirs()
+    run_id = short_id("verify")
+    log_path = LOG_DIR / f"{run_id}.log"
+    started = time.time()
+    executed: list[dict[str, Any]] = []
+    exit_code: int | None = 0
+    log_chunks: list[str] = []
+
+    for command in commands:
+        outcome = run_suite_command(command, repo_path, timeout_sec)
+        log_chunks.append(
+            f"$ {' '.join(outcome['command'])}\n"
+            f"[exitCode={outcome['exitCode']} status={outcome['status']} "
+            f"durationSec={outcome['durationSec']}]\n"
+            f"--- stdout ---\n{outcome['stdout']}\n--- stderr ---\n{outcome['stderr']}\n"
+        )
+        executed.append(
+            {
+                "command": outcome["command"],
+                "exitCode": outcome["exitCode"],
+                "status": outcome["status"],
+                "durationSec": outcome["durationSec"],
+                "stdoutTail": (outcome["stdout"] or "")[-2000:],
+                "stderrTail": (outcome["stderr"] or "")[-2000:],
+            }
+        )
+        exit_code = outcome["exitCode"]
+        if outcome["exitCode"] != 0:
+            # A3 rule 3: the first failure ends the suite. Anything after it
+            # would be running against the state the failure left behind.
+            break
+
+    log_path.write_text("\n".join(log_chunks), encoding="utf-8")
+    duration_sec = round(time.time() - started, 3)
+
+    verification = {
+        "evidenceLevel": EVIDENCE_MACHINE,
+        "suiteName": suite_name,
+        "commands": [list(command) for command in commands],
+        "executed": executed,
+        "exitCode": exit_code,
+        "stdoutPath": str(log_path),
+        "stderrPath": str(log_path),
+        "durationSec": duration_sec,
+        "repoPath": str(repo_path),
+        "gitHeadSha": head_sha,
+        "fingerprint": fingerprint,
+        "runId": run_id,
+        "isPrimarySuite": suite_name in PRIMARY_SUITE_NAMES,
+        "at": now_iso(),
+    }
+
+    payload: dict[str, Any] = {
+        "status": "PASSED" if exit_code == 0 else "FAILED",
+        "verification": verification,
+        "logPath": str(log_path),
+    }
+    if job_id:
+        job = upsert_job({"id": job_id, "verification": verification, "stage": "VERIFICATION"})
+        payload["job"] = job_with_defaults(job)
+    return payload
+
+
 def schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
     return {"type": "object", "properties": properties, "required": required or [], "additionalProperties": False}
 
@@ -2558,6 +2902,35 @@ TOOLS = [
             ["jobId"],
         ),
     },
+    {
+        "name": "run_verification_suite",
+        "title": "Run Declared Verification Suite",
+        "description": (
+            "Run the verification commands the target repo declares in its own .dev-triangle/verify.json "
+            "and capture exit codes as machine evidence. There is no command parameter: this tool cannot "
+            "run anything the repo has not declared. Unconfirmed or changed manifests return "
+            "NEEDS_CONFIRMATION with the full command text for review."
+        ),
+        "inputSchema": schema(
+            {
+                "repoPath": {"type": "string", "description": "Repository to verify."},
+                "suiteName": {
+                    "type": "string",
+                    "description": "Suite declared in verify.json. Defaults to 'default'.",
+                },
+                "confirmSuite": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Confirm you have read the declared commands at this commit.",
+                },
+                "jobId": {
+                    "type": "string",
+                    "description": "Optional ledger job to attach the evidence to.",
+                },
+            },
+            ["repoPath"],
+        ),
+    },
 ]
 
 
@@ -2581,6 +2954,10 @@ HANDLERS = {
     "job_list": tool_job_list,
     "job_get": tool_job_get,
     "job_update": tool_job_update,
+    # Registered on the main server only. The report-only server must never gain
+    # this tool: a worker that can run commands and also write its own result is
+    # the exact shape INV-02 exists to prevent.
+    "run_verification_suite": tool_run_verification_suite,
 }
 
 

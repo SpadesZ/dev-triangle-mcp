@@ -1,4 +1,9 @@
-.dev-triangle/
+# Runtime state lives here when DEV_TRIANGLE_HOME is unset, so the folder stays
+# ignored. verify.json is the exception: it is this repo's own declaration of
+# which commands may be run against it, and it only means anything if it is
+# committed and reviewable.
+.dev-triangle/*
+!.dev-triangle/verify.json
 .dev-triangle-test/
 .dev-triangle-report-test/
 demo-output/

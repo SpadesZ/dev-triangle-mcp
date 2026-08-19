@@ -1,0 +1,25 @@
+{
+  "_help": [
+    "This file declares which commands Dev Triangle MCP may run against this repo.",
+    "Anything not listed here cannot be run: the MCP tool has no command parameter.",
+    "The runner fingerprints this file together with the current git HEAD, so both",
+    "an edit here and a new commit require a fresh confirmation before anything runs."
+  ],
+  "schemaVersion": 1,
+  "suites": {
+    "default": {
+      "commands": [
+        "python -m pytest -q tests",
+        "python tests/protocol_smoke.py",
+        "python tests/report_server_smoke.py"
+      ],
+      "timeoutSec": 900
+    },
+    "quick": {
+      "commands": [
+        "python -m py_compile server.py antigravity_report_server.py"
+      ],
+      "timeoutSec": 120
+    }
+  }
+}

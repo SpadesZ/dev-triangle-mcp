@@ -261,6 +261,7 @@ def main() -> int:
         assert "submit_antigravity_result" in names
         assert "mcp_health_check" in names
         assert "job_list" in names
+        assert "run_verification_suite" in names
 
         jobs = rpc(
             proc,

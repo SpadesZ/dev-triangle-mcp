@@ -24,6 +24,8 @@
 | NOTE-003 | 秘密掃描的 `hits` 只回報位置與數量，永不回傳命中的原文 | `INV-04` 金鑰不得寫進 `jobs.json` |
 | NOTE-004 | `kind: "cli"` 的 `model` 留空是「不傳參數」，`kind: "api"` 留空是「未設定」 | `INV-12` 不得有預設模型 |
 | NOTE-005 | profile 載入錯誤在 agy 模型解析路徑上轉成 note，不轉成例外 | 健康檢查與 CLI 偵測的可用性 |
+| NOTE-006 | 逾時必須終止整棵行程樹，不是只殺父行程 | 孤兒行程鎖住檔案與埠口 |
+| NOTE-007 | `verify.json` 的 hash 必須連 `git HEAD` 一起算 | `VUL-03` TOCTOU；`F4` 惡意 repo |
 
 ---
 
@@ -128,3 +130,39 @@
   該測試把 `contextBroker` 改名成 `broker`（`F10` 的實際形狀），斷言 `configured_antigravity_agy_model()` 仍回得了話、且 note 內含錯誤說明；同時斷言 `load_profile()` **有**丟例外。
   突變：把 `profile_diagnostician_model()` 的 `except ProfileError` 改成回 `("", None)`（吞掉錯誤不回報）→ **必須變紅**。
 - **維護邊界**：新增的 dispatch 工具**不得**沿用這個處置。它們沒有「使用者正在診斷」的情境，設定壞了就該拒絕執行。
+
+---
+
+## NOTE-006 逾時必須終止整棵行程樹，不是只殺父行程
+
+- **決策日期**：2026-08-19
+- **適用範圍**：`server.py` 的 `run_native()`、`kill_process_tree()`、`child_process_spawn_kwargs()`。
+- **決策**：子行程一律在自己的 process group／session 中啟動（Windows 用 `CREATE_NEW_PROCESS_GROUP`，POSIX 用 `start_new_session=True`），逾時時對**整個群組**下手（Windows `taskkill /F /T /PID`，POSIX `killpg`），然後才 raise。**不得**改回單純的 `subprocess.run(timeout=...)`。
+- **原因**：`subprocess.run` 逾時只會殺掉它直接啟動的那個行程。而 `verify.json` 宣告的指令幾乎都是**啟動器**——`python -m pytest` 會 fork worker、`npm test` 會拉起 node、測試本身可能起一個 dev server。父行程死了，孫行程還活著。
+  後果不是「多了幾個閒置行程」，是**下一次驗證會用一個被污染的環境跑**：埠口還被佔著、檔案還被鎖著（Windows 尤其嚴重）、暫存目錄還在被寫。於是驗證結果變成不可重現的，而 `S4.2` `false_green_rate` 的整個前提就是「同樣的指令重跑會得到同樣的結果」。
+  這件事在單機開發時幾乎不會被發現——因為第一次跑通常是好的。
+- **驗證**：
+  ```powershell
+  python -m pytest -q tests\test_verification_suite.py::test_timeout_kills_the_whole_process_tree
+  ```
+  該測試讓 suite 跑一個會生出長命子行程的指令並設極短 timeout，逾時後斷言子行程已經不在。
+  突變：把 `run_native` 改回 `subprocess.run(..., timeout=timeout)` → **必須變紅**。
+- **維護邊界**：`kill_process_tree()` 之後仍要 `communicate()` 把管線抽乾再回傳，否則在 Windows 上會偶發卡住。
+
+---
+
+## NOTE-007 `verify.json` 的 hash 必須連 `git HEAD` 一起算
+
+- **決策日期**：2026-08-19
+- **適用範圍**：`server.py` 的 `suite_fingerprint()` 與 `tool_run_verification_suite()` 的確認閘門；ledger 的 `verifySuites[]`。
+- **決策**：指紋 = `sha256(verify.json 全文 ‖ git rev-parse HEAD)`。**不得**改成只算 `verify.json` 的內容。
+- **原因**：確認閘門要回答的問題是「**我核准過的那件事，跟現在要跑的這件事，是同一件嗎**」。
+  只算 `verify.json` 的話，攻擊路徑是這樣的：`verify.json` 寫 `python -m pytest`，你看過、確認了；接著一個 patch 把 `tests/conftest.py` 換掉。`verify.json` 一個字都沒動，指紋不變，閘門直接放行——而真正被執行的程式碼已經完全不同了。**這就是 `VUL-03` 的 TOCTOU**：檢查的是宣告，執行的是內容。
+  把 HEAD 綁進去之後，任何 commit 都會讓指紋改變，於是「換掉測試腳本」必然伴隨一次重新確認。
+  代價是誠實的：**每次 commit 之後第一次驗證都要重新確認一次**。這個摩擦是刻意的，不得為了順手而拿掉。
+- **驗證**：
+  ```powershell
+  python -m pytest -q tests\test_verification_suite.py::test_new_commit_requires_reconfirmation
+  ```
+  突變：把 `suite_fingerprint()` 改成只吃 `manifest_text` → **必須變紅**。
+- **維護邊界**：這道閘門**不受**「設定變更不設閘門」那道裁決（`I4` gate #8／#9）涵蓋。那道裁決講的是**使用者設定自己的工具**；這道擋的是**第三方 repo 的檔案能不能在你的機器上跑指令**。詳見 `docs/decisions/2026-08-19-three-vendor-upgrade.md`。
