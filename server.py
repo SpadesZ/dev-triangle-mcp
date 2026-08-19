@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-from providers import models, profiles
+from providers import context_broker, models, outbound, profiles
 from providers.profiles import ProfileError, RoleDisabled, RoleNotConfigured
 
 # Secret detection lives in one module so the publish scanner and every outbound
@@ -2936,6 +2936,83 @@ def tool_profile_revert_last(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Context Broker dispatch (SAI W05)
+# ---------------------------------------------------------------------------
+
+
+def resolve_role_or_status(profile_name: str, slot: str) -> tuple[Any, dict[str, Any] | None]:
+    """Return (binding, None) or (None, a status payload the caller should return).
+
+    Not-configured and disabled are ordinary states, not errors: the honest
+    answer is "this role is not set up", not a stack trace.
+    """
+    try:
+        profile = profiles.load_profile(profile_name)
+    except ProfileError as exc:
+        return None, {"status": "PROFILE_ERROR", "profile": profile_name, "message": str(exc)}
+    try:
+        return profiles.resolve_role(profile, slot), None
+    except RoleDisabled as exc:
+        return None, {"status": "ROLE_DISABLED", "profile": profile_name, "slot": slot, "message": str(exc)}
+    except RoleNotConfigured as exc:
+        return None, {"status": "ROLE_NOT_CONFIGURED", "profile": profile_name, "slot": slot, "message": str(exc)}
+    except ProfileError as exc:
+        return None, {"status": "PROFILE_ERROR", "profile": profile_name, "slot": slot, "message": str(exc)}
+
+
+def dispatch_destination(binding: Any, brief_or_impl: dict[str, Any]) -> dict[str, Any]:
+    # INV-15(c): every outbound dispatch says where it went, in the result the
+    # user actually reads.
+    return {
+        "slot": binding.slot,
+        "displayName": binding.label,
+        "targetBaseUrl": brief_or_impl.get("targetBaseUrl", ""),
+        "targetModel": brief_or_impl.get("targetModel", ""),
+    }
+
+
+def tool_dispatch_context_brief(args: dict[str, Any]) -> dict[str, Any]:
+    repo_path = resolve_project_dir(require_string(args, "repoPath", 2000))
+    user_request = require_string(args, "userRequest", 20000)
+    multimodal_paths = optional_string_list(args, "multimodalPaths")
+    job_id = optional_string(args, "jobId", 200)
+    profile_name = resolve_profile_name(args)
+
+    binding, status = resolve_role_or_status(profile_name, "contextBroker")
+    if status is not None:
+        return status
+
+    try:
+        brief = context_broker.create_brief(binding, repo_path, user_request, multimodal_paths)
+    except outbound.OutboundBlocked as exc:
+        return {"status": "OUTBOUND_BLOCKED", "repoPath": str(repo_path), "message": str(exc)}
+    except context_broker.BriefError as exc:
+        return {"status": "BRIEF_REJECTED", "repoPath": str(repo_path), "message": str(exc)}
+
+    if job_id:
+        job = upsert_job({"id": job_id, "contextBrief": brief, "stage": "RESEARCH", "profile": profile_name})
+    else:
+        skeleton = new_job_skeleton(
+            provider="dev-triangle", route="broker-architect", title=user_request[:120], profile=profile_name
+        )
+        skeleton["contextBrief"] = brief
+        job = upsert_job(skeleton)
+
+    destination = dispatch_destination(binding, brief)
+    return {
+        "status": "OK",
+        "jobId": job["id"],
+        "contextBrief": brief,
+        "dispatch": destination,
+        "message": (
+            f"Brief built by {destination['displayName']} using model {destination['targetModel']} "
+            f"at {destination['targetBaseUrl']}. "
+            f"{len(brief['impactedFiles'])} impacted files, compression ratio {brief['compressionRatio']}."
+        ),
+    }
+
+
 def schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
     return {"type": "object", "properties": properties, "required": required or [], "additionalProperties": False}
 
@@ -3222,6 +3299,27 @@ TOOLS = [
         ),
     },
     {
+        "name": "dispatch_context_brief",
+        "title": "Build Context Brief",
+        "description": (
+            "First leg: send a repository outline and the user's request to the contextBroker role and "
+            "get back a structured brief listing the files the work will touch. Only repositories "
+            "listed in config/outbound-repos.json may be sent. Always tell the user which model and "
+            "endpoint the brief was sent to; the reply carries it in dispatch.targetBaseUrl and "
+            "dispatch.targetModel."
+        ),
+        "inputSchema": schema(
+            {
+                "repoPath": {"type": "string"},
+                "userRequest": {"type": "string"},
+                "multimodalPaths": {"type": "array", "items": {"type": "string"}},
+                "profile": {"type": "string"},
+                "jobId": {"type": "string"},
+            },
+            ["repoPath", "userRequest"],
+        ),
+    },
+    {
         "name": "profile_describe",
         "title": "Describe Provider Profile",
         "description": (
@@ -3302,6 +3400,7 @@ HANDLERS = {
     # Orchestrator only. A worker that can rebind a role can point the architect
     # slot at itself, which is why INV-02 matters more after the gate was
     # removed, not less.
+    "dispatch_context_brief": tool_dispatch_context_brief,
     "profile_describe": tool_profile_describe,
     "profile_set_role": tool_profile_set_role,
     "profile_revert_last": tool_profile_revert_last,

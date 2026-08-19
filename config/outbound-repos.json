@@ -1,0 +1,15 @@
+{
+  "_help": [
+    "Which repositories may have their contents sent to an external API.",
+    "Owner decision, SAI I4 gate #3. There is no default and no wildcard:",
+    "a repo that is not listed here is refused, including when the request",
+    "looks like it came from you.",
+    "",
+    "\"<self>\" means the repository this MCP server itself lives in.",
+    "Add other repositories as absolute paths. Environment variables are expanded."
+  ],
+  "schemaVersion": 1,
+  "allowedRepos": [
+    "<self>"
+  ]
+}
