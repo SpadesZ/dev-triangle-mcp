@@ -56,8 +56,22 @@ from providers.redaction import (
 
 
 SERVER_NAME = "dev-triangle-mcp"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.3.0"
 PROTOCOL_VERSION = "2025-06-18"
+
+# Ledger job shape. Version 1 jobs stay on disk exactly as they were written;
+# readers fill the missing sections in memory instead of migrating the file.
+JOB_SCHEMA_VERSION = 2
+
+# Owner decision 2026-08-19 (SAI I4 gate #4): one retry by default, and the code
+# refuses to go past three no matter what a profile asks for.
+SELF_HEAL_DEFAULT_MAX_ATTEMPTS = 1
+SELF_HEAL_HARD_CAP = 3
+
+JOB_STAGES = ("RESEARCH", "IMPLEMENTATION", "VERIFICATION", "GATE", "DONE")
+JOB_ROUTES = ("broker-architect", "architect-only", "jules", "local")
+EVIDENCE_MACHINE = "machine"
+EVIDENCE_AGENT_ASSERTED = "agent_asserted"
 
 # Runtime state is deliberately separate from source code. For local installs
 # this normally points at %USERPROFILE%\.dev-triangle; tests override it with a
@@ -117,6 +131,117 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def empty_context_brief() -> dict[str, Any]:
+    return {
+        "author": "",
+        "multimodalPaths": [],
+        "repoSummary": "",
+        "impactedFiles": [],
+        "keyDependencies": [],
+        "sourceRefs": [],
+        "tokensIn": 0,
+        "tokensOut": 0,
+        # INV-15(c): where the payload actually went, printed back to the user.
+        "targetBaseUrl": "",
+        "targetModel": "",
+    }
+
+
+def empty_implementation() -> dict[str, Any]:
+    return {
+        "author": "",
+        "patchPaths": [],
+        "testPlan": [],
+        "rationale": "",
+        "appliedAtRef": "",
+        "targetBaseUrl": "",
+        "targetModel": "",
+    }
+
+
+def empty_verification() -> dict[str, Any]:
+    return {
+        "evidenceLevel": "",
+        "suiteName": "",
+        "commands": [],
+        "exitCode": None,
+        # Paths, not contents: test output reaches megabytes and the ledger is
+        # read and written whole every time (SAI A2 reason 2).
+        "stdoutPath": "",
+        "stderrPath": "",
+        "durationSec": 0,
+    }
+
+
+def empty_self_heal() -> dict[str, Any]:
+    return {"attempts": 0, "maxAttempts": SELF_HEAL_DEFAULT_MAX_ATTEMPTS, "history": []}
+
+
+def empty_cost() -> dict[str, Any]:
+    return {"calls": 0, "tokensIn": 0, "tokensOut": 0}
+
+
+JOB_SECTION_FACTORIES = {
+    "contextBrief": empty_context_brief,
+    "implementation": empty_implementation,
+    "verification": empty_verification,
+    "selfHeal": empty_self_heal,
+    "cost": empty_cost,
+}
+
+
+def job_with_defaults(job: dict[str, Any]) -> dict[str, Any]:
+    """Return a reader's view of a job with the v2 sections present.
+
+    This deliberately returns a copy. Filling the sections in place would mean
+    the next save_ledger() rewrites every historical job, which is a migration
+    wearing a compatibility-shim costume (SAI W02: do not migrate old data).
+    """
+    view = dict(job)
+    view.setdefault("schemaVersion", 1)
+    view.setdefault("route", "")
+    view.setdefault("stage", "")
+    view.setdefault("profile", "")
+    view.setdefault("roleBindings", {})
+    for name, factory in JOB_SECTION_FACTORIES.items():
+        section = view.get(name)
+        if not isinstance(section, dict):
+            view[name] = factory()
+        else:
+            merged = factory()
+            merged.update(section)
+            view[name] = merged
+    return view
+
+
+def new_job_skeleton(
+    provider: str,
+    route: str = "",
+    title: str = "",
+    profile: str = "",
+) -> dict[str, Any]:
+    if route and route not in JOB_ROUTES:
+        raise ToolError(f"Unknown route {route!r}. Known routes: {list(JOB_ROUTES)}.")
+    return {
+        "id": short_id(provider or "job"),
+        "schemaVersion": JOB_SCHEMA_VERSION,
+        "provider": provider,
+        "route": route,
+        "stage": "RESEARCH",
+        "status": "RUNNING",
+        "profile": profile,
+        "title": title,
+        "roleBindings": {},
+        "contextBrief": empty_context_brief(),
+        "implementation": empty_implementation(),
+        "verification": empty_verification(),
+        "selfHeal": empty_self_heal(),
+        "cost": empty_cost(),
+        "createdAt": now_iso(),
+        "updatedAt": now_iso(),
+    }
+
+
 def load_ledger() -> dict[str, Any]:
     ledger = read_json(
         LEDGER_PATH,
@@ -124,6 +249,8 @@ def load_ledger() -> dict[str, Any]:
     )
     ledger.setdefault("jobs", [])
     ledger.setdefault("handoffs", [])
+    # Additive only: a v1 file gains an empty list, nothing existing is touched.
+    ledger.setdefault("configChanges", [])
     return ledger
 
 
@@ -804,6 +931,10 @@ def upsert_job(job: dict[str, Any]) -> dict[str, Any]:
         job["updatedAt"] = now_iso()
         jobs.append(job)
         saved = job
+        if int(job.get("schemaVersion", 1) or 1) >= JOB_SCHEMA_VERSION:
+            # The file now genuinely holds v2 data. Old jobs keep their own
+            # schemaVersion, so a mixed ledger stays self-describing.
+            ledger["schemaVersion"] = max(int(ledger.get("schemaVersion", 1) or 1), JOB_SCHEMA_VERSION)
     save_ledger(ledger)
     return saved
 
@@ -2132,7 +2263,12 @@ def tool_job_list(args: dict[str, Any]) -> dict[str, Any]:
         jobs = [job for job in jobs if job.get("provider") == provider]
     if status:
         jobs = [job for job in jobs if job.get("status") == status]
-    return {"ledgerPath": str(LEDGER_PATH.resolve()), "jobs": jobs[-limit:], "handoffs": ledger.get("handoffs", [])[-limit:]}
+    return {
+        "ledgerPath": str(LEDGER_PATH.resolve()),
+        "schemaVersion": ledger.get("schemaVersion", 1),
+        "jobs": [job_with_defaults(job) for job in jobs[-limit:]],
+        "handoffs": ledger.get("handoffs", [])[-limit:],
+    }
 
 
 def tool_job_get(args: dict[str, Any]) -> dict[str, Any]:
@@ -2140,7 +2276,7 @@ def tool_job_get(args: dict[str, Any]) -> dict[str, Any]:
     ledger = load_ledger()
     for job in ledger.get("jobs", []):
         if job.get("id") == job_id:
-            return {"job": job}
+            return {"job": job_with_defaults(job)}
     for handoff in ledger.get("handoffs", []):
         if handoff.get("id") == job_id:
             return {"handoff": handoff}
