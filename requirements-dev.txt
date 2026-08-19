@@ -1,0 +1,6 @@
+# Development and CI dependencies.
+#
+# The servers themselves deliberately have no third-party runtime dependencies:
+# they run on a stock interpreter so an install cannot be broken by a package
+# resolution problem on someone else's machine. Everything below is for testing.
+pytest>=8.0
