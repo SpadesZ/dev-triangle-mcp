@@ -1,41 +1,82 @@
 {
+  "_help": [
+    "Copy this file to config/providers.<your-name>.json and fill it in.",
+    "The file name is the profile name; it must match [a-z0-9-]+.",
+    "Select it with the DEV_TRIANGLE_PROFILE environment variable.",
+    "This project never fills in a model for you. Empty means 'not configured',",
+    "and a role that is not configured refuses to run instead of guessing.",
+    "Keys starting with _ are ignored by the loader; they are your notes."
+  ],
   "schemaVersion": 1,
-  "activeProfile": "codex-jules-antigravity",
-  "profiles": {
-    "codex-jules-antigravity": {
-      "description": "Current stable default. Codex orchestrates, Jules handles cloud coding work, and Antigravity validates locally through agy.",
-      "orchestrator": {
-        "provider": "codex"
-      },
-      "workers": {
-        "cloud_code": {
-          "provider": "jules",
-          "requiresEnv": ["JULES_API_KEY"]
-        },
-        "local_verify": {
-          "provider": "antigravity",
-          "command": "agy",
-          "reportServer": "dev-triangle-report"
-        }
-      }
+  "displayName": "",
+  "_displayName": "Your own label for this profile. Shown in health checks. Leave empty to show the file name.",
+  "_slotKeys": "The seven role keys below are fixed by this project. Rename them and the role silently stops being called. Put your own naming in displayName instead.",
+  "_fields": {
+    "displayName": "Yours. Any text, any language, emoji fine. Never used as a lookup key.",
+    "kind": "Fixed enum: api | jules | local-suite | cli | mcp | mcp-client. It selects which adapter runs.",
+    "provider": "Yours. A free-form label for the vendor. This project deliberately does not list allowed values.",
+    "dialect": "How to shape the HTTP request: openai | anthropic | gemini | ollama. Leave empty to let the adapter infer it.",
+    "model": "Yours. The model id, exactly as your provider spells it. Empty = this role is not configured.",
+    "baseUrl": "Yours. Leave empty for the adapter's built-in endpoint. Self-hosted, proxy, and regional endpoints are all fine.",
+    "apiKeyEnv": "The NAME of an environment variable, not the key itself. Must match ^[A-Z][A-Z0-9_]*$.",
+    "maxInputTokens": "Yours, or null to let the provider's own API complain instead.",
+    "enabled": "false means this role's tools refuse immediately rather than trying a call. That is the normal state for 'not decided yet'.",
+    "verified": "Set by the tooling when the model id was checked against the provider's model list. Missing means not verified."
+  },
+  "roles": {
+    "orchestrator": {
+      "displayName": "",
+      "kind": "mcp-client",
+      "enabled": true,
+      "note": "Whichever client you call this MCP server from is the orchestrator. This project cannot choose it, and does not try."
     },
-    "claude-gemini-antigravity": {
-      "description": "Future example. Claude orchestrates, Gemini CLI performs code work, and Antigravity validates locally.",
-      "orchestrator": {
-        "provider": "claude"
-      },
-      "workers": {
-        "code": {
-          "provider": "gemini_cli",
-          "command": "gemini",
-          "reportServer": "dev-triangle-report"
-        },
-        "local_verify": {
-          "provider": "antigravity",
-          "command": "agy",
-          "reportServer": "dev-triangle-report"
-        }
-      }
+    "contextBroker": {
+      "displayName": "",
+      "kind": "api",
+      "provider": "",
+      "dialect": "",
+      "model": "",
+      "baseUrl": "",
+      "apiKeyEnv": "",
+      "maxInputTokens": null,
+      "enabled": false
+    },
+    "architect": {
+      "displayName": "",
+      "kind": "api",
+      "provider": "",
+      "dialect": "",
+      "model": "",
+      "baseUrl": "",
+      "apiKeyEnv": "",
+      "maxInputTokens": null,
+      "enabled": false
+    },
+    "cloudWorker": {
+      "displayName": "",
+      "kind": "jules",
+      "apiKeyEnv": "JULES_API_KEY",
+      "enabled": true
+    },
+    "verifier": {
+      "displayName": "",
+      "kind": "local-suite",
+      "enabled": true,
+      "note": "Runs only the commands the target repo declares in its own .dev-triangle/verify.json. Callers cannot supply commands."
+    },
+    "diagnostician": {
+      "displayName": "",
+      "kind": "cli",
+      "command": "agy",
+      "model": "",
+      "enabled": true,
+      "note": "Empty model here means 'do not pass --model', letting the CLI use its own default. That is different from an api role, where empty means not configured."
+    },
+    "reporter": {
+      "displayName": "",
+      "kind": "mcp",
+      "server": "dev-triangle-report",
+      "enabled": true
     }
   }
 }

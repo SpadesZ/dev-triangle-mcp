@@ -42,6 +42,9 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
+from providers import profiles
+from providers.profiles import ProfileError, RoleDisabled, RoleNotConfigured
+
 # Secret detection lives in one module so the publish scanner and every outbound
 # payload check share a single rule set. See docs/SAI.md W08.
 from providers.redaction import (
@@ -1174,15 +1177,46 @@ def tool_antigravity_detect_cli(args: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def profile_diagnostician_model() -> tuple[str, str | None]:
+    """Read the diagnostician model from the active profile, if any.
+
+    Returns (model, note). A note is a human-readable problem to surface, not an
+    exception: a typo in an unrelated profile role should not stop CLI detection
+    from answering. See docs/NOTES.md NOTE-005.
+    """
+    try:
+        profile = profiles.load_active_profile()
+    except ProfileError as exc:
+        return "", f"Profile problem while resolving the diagnostician model: {exc}"
+    if profile is None:
+        return "", None
+    try:
+        binding = profiles.resolve_role(profile, "diagnostician")
+    except RoleDisabled:
+        return "", None
+    except ProfileError as exc:
+        return "", f"Profile problem while resolving the diagnostician model: {exc}"
+    return binding.model, None
+
+
 def configured_antigravity_agy_model() -> tuple[str, str | None]:
+    # Resolution order: environment variable > active profile > empty. Empty is
+    # a real answer here: it means "do not pass --model" and let agy use its own
+    # default. NOTE(NOTE-004) explains why this differs from api roles.
     model = os.environ.get("ANTIGRAVITY_AGY_MODEL", "").strip()
+    source = "ANTIGRAVITY_AGY_MODEL"
+    if not model:
+        model, note = profile_diagnostician_model()
+        source = "profile roles.diagnostician.model"
+        if note:
+            return "", note
     if not model:
         return "", None
     # NOTE(NOTE-001): Dropping the value is the point. Returning it, or
     # substituting another model name here, re-creates the silent default that
     # INV-12 forbids.
     if model in ANTIGRAVITY_LEGACY_UNSAFE_MODELS:
-        return "", f"Ignored legacy unsafe ANTIGRAVITY_AGY_MODEL value: {model}"
+        return "", f"Ignored legacy unsafe {source} value: {model}"
     return model, None
 
 
@@ -2008,6 +2042,36 @@ def tool_submit_antigravity_result(args: dict[str, Any]) -> dict[str, Any]:
     return {"handoff": updated or handoff, "status": status, "result": result}
 
 
+def profile_health_block() -> dict[str, Any]:
+    """Describe the active profile for mcp_health_check.
+
+    Reports problems instead of raising: a health check that cannot run because
+    the thing it is checking is broken is not a useful health check.
+    """
+    block: dict[str, Any] = {
+        "configDir": str(profiles.config_dir()),
+        "availableProfiles": profiles.list_profiles(),
+        "activeProfile": profiles.active_profile_name(),
+    }
+    if not block["activeProfile"]:
+        block["status"] = "NO_PROFILE_SELECTED"
+        block["hint"] = (
+            "Set DEV_TRIANGLE_PROFILE to one of availableProfiles. There is deliberately no "
+            "default profile: picking one for you is how a model you did not choose ends up "
+            "doing your work."
+        )
+        return block
+    try:
+        profile = profiles.load_profile(block["activeProfile"])
+    except ProfileError as exc:
+        block["status"] = "PROFILE_ERROR"
+        block["error"] = str(exc)
+        return block
+    block.update(profile.describe())
+    block["status"] = "OK"
+    return block
+
+
 def tool_mcp_health_check(args: dict[str, Any]) -> dict[str, Any]:
     include_jules = args.get("includeJules", False)
     if not isinstance(include_jules, bool):
@@ -2028,6 +2092,7 @@ def tool_mcp_health_check(args: dict[str, Any]) -> dict[str, Any]:
             "results": str(RESULT_DIR),
             "patches": str(PATCH_DIR),
         },
+        "profile": profile_health_block(),
         "jules": {"apiKeyPresent": bool(os.environ.get("JULES_API_KEY", "").strip())},
         "antigravity": {
             "available": antigravity["available"],

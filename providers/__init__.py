@@ -8,7 +8,7 @@
 # 主要責任:
 #   1. 宣告 providers 為 package
 # 維護提醒:
-#   - 不得在此檔設定任何預設模型、預設 provider 或環境變數 fallback。INV-12 規定設定解析鏈的末端是報錯不是預設值，而這裡是最容易被偷偷塞進一行 or "..." 的地方
+#   - 不得在此檔設定任何預設模型、預設 provider 或環境變數 fallback。INV-12 規定設定解析鏈的末端是報錯不是預設值，而 package 初始化是最容易被偷偷塞進一行 fallback 運算式的地方（S4.9 的掃描會命中，見 docs/NOTES.md NOTE-001 的量尺說明）
 #   - 不得在此 import 子模組。providers.redaction 會被 server.py 在啟動路徑上 import，多餘的連鎖 import 會拖慢 MCP 冷啟動
 # 驗證方式:
 #   - python -c "import providers; print(providers.__name__)"
