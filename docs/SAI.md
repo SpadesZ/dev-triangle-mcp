@@ -1253,6 +1253,26 @@ W00 方案裁決書（gate #1 已核准，剩 #2–#7；不擋任何人）
 > ⚠️ **查證等級**：下表標「本輪未實跑」的，施工時**必須自己跑一次並記錄 exit code**，然後把狀態改掉。
 > 本機主 shell 是 PowerShell，看 `$LASTEXITCODE`。
 
+#### 施工輪實跑紀錄（2026-08-19，`feat/sai-v0.6-upgrade`）
+
+| 指令 | Exit | 結果 |
+|---|---|---|
+| `python -m py_compile server.py antigravity_report_server.py` | **0** | — |
+| `python -m pytest -q tests` | **0** | **118 passed**（涵蓋 `W01`–`W13` 全部突變測試） |
+| `python tests\protocol_smoke.py` | **0** | Tool count **27**（施工前 19） |
+| `python tests\report_server_smoke.py` | **0** | Tool count 2 |
+| `.\scripts\smoke.ps1 -StateRoot <temp>` | **0** | status: pass |
+| `.\scripts\doctor.ps1` | **0** | **11 項全 PASS**（施工前 Exit 1，`codexConfigHasDevTriangle` 紅） |
+| `.\scripts\install-local.ps1 -ToolRoot D:\dev-triangle-mcp` | **0** | 三份客戶端設定改指向 D:，並各留一份 `.dev-triangle-backup-20260819-155327` |
+
+**突變驗證累計 41 條，全部紅→綠**，逐條記錄在各工作包的 commit message。其中兩條第一次跑出綠燈，補強測試後才變紅（`W02` 的就地填充遷移、`W04` 的 `agent_asserted` 標記），兩者都寫在對應 commit 裡。
+
+**`S4.1` `machine_verified_rate` 實測 = 1.000**：代理人自述路徑 requested `SUCCESS` → 實際落成 `NEEDS_REVIEW`；`run_verification_suite` 跑出 exit 0 的機器憑據後 → 落成 `SUCCESS`。
+
+**`S4.8` = 0、`S4.9` = 0**（依 `NOTE-001`／`NOTE-008` 的機械判準，由 `tests/test_repo_integrity.py` 執行）。
+
+⚠️ **仍未實跑**：`.\scripts\demo-user-flow.ps1`（需本機已認證的 agy）、以及 `W05`／`W06` 對**真實端點**的呼叫（`C6`）。
+
 | W | 指令（repo 根執行） | 狀態 |
 |---|---|---|
 | 全部 | `python -m py_compile server.py antigravity_report_server.py` | ✅ CI 既有（`ci.yml:24`） |
