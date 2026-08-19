@@ -201,6 +201,111 @@ claude mcp add dev-triangle --scope user `
 
 ---
 
+## 四之一、下一步：兩件待辦（可直接照做）
+
+### 待辦 A — 讓 dev_triangle 在**所有**專案都看得到（user scope）
+
+目前只有在 `D:\dev-triangle-mcp` 開 Claude Code 才有那 30 支工具。要全域可用就得在
+`~/.claude.json` 加 `mcpServers`（目前**沒有**這個鍵）。
+
+⚠️ **這一步不能由執行中的 Claude Code 自己做。** 那個檔（實測 41.5 KB，含 `projects`
+歷史與 `oauthAccount`）是 Claude Code 自己持續重寫的，開著改會被吃掉——`NOTE-014`
+記錄的 desktop 設定就是這樣消失的。
+
+**步驟**：
+
+1. **完全關掉 Claude Code**（含所有視窗與 IDE 擴充）。
+2. 備份：
+   ```powershell
+   Copy-Item "$env:USERPROFILE\.claude.json" "$env:USERPROFILE\.claude.json.bak-$(Get-Date -Format yyyyMMdd-HHmmss)"
+   ```
+3. 在 `~/.claude.json` 的**最外層**加入以下鍵（內容與 `D:\dev-triangle-mcp\.mcp.json`
+   的 `mcpServers` 完全相同，直接照抄）：
+   ```json
+   "mcpServers": {
+     "dev-triangle": {
+       "command": "C:\\Users\\Franky Kuo\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+       "args": ["D:\\dev-triangle-mcp\\server.py"],
+       "env": {
+         "DEV_TRIANGLE_HOME": "C:\\Users\\Franky Kuo\\.dev-triangle",
+         "ANTIGRAVITY_HANDOFF_DIR": "C:\\Users\\Franky Kuo\\.dev-triangle\\antigravity-handoffs",
+         "ANTIGRAVITY_COMMAND": "C:\\Users\\Franky Kuo\\AppData\\Local\\agy\\bin\\agy.exe"
+       }
+     }
+   }
+   ```
+4. 重開 Claude Code，**在一個不是 `D:\dev-triangle-mcp` 的資料夾**測試工具在不在。
+5. 驗收：
+   ```powershell
+   cd D:\dev-triangle-mcp; .\scripts\doctor.ps1
+   # orchestratorConfigured 應含 claudeCodeUser
+   ```
+6. ⚠️ **隔幾小時再跑一次第 5 步。** `NOTE-014` 的教訓是「安裝當下綠不算數」——
+   要跨過一次 App 重寫才算真的留得住。
+
+### 待辦 B — 補上 `C6`「not only mocks」（唯一沒達成的驗收條件）
+
+**在 `D:\dev-triangle-mcp` 開 Claude Code**（工具已掛好）執行。目標：讓
+Broker→Architect 那條路線第一次真的送出請求，而不是被 monkeypatch 換掉。
+
+**先確認機器上有什麼**（2026-08-19 實測）：
+
+| CLI | 路徑 | 備註 |
+|---|---|---|
+| `agy` | `C:\Users\Franky Kuo\AppData\Local\agy\bin\agy.exe` | 在 PATH 上，v1.0.13 |
+| `codex` | `C:\Users\Franky Kuo\AppData\Local\OpenAI\Codex\bin\39633208fb6e0c47\codex.exe` | ⚠️ 路徑含版本 hash，Codex 更新後會失效 |
+| `claude` / `gemini` | **沒有** | CLI 未安裝，只有 IDE／App |
+
+**步驟**：
+
+1. **先手動探一次那支 CLI 怎麼吃 prompt**，不要直接寫進 profile 用猜的：
+   ```powershell
+   $codex = "C:\Users\Franky Kuo\AppData\Local\OpenAI\Codex\bin\39633208fb6e0c47\codex.exe"
+   & $codex --help | Select-Object -First 30
+   # 目標：確認非互動模式的子指令，以及 prompt 走 argv 還是 stdin
+   ```
+   結果決定 profile 的 `args`／`promptArg`／`promptVia` 怎麼填（`NOTE-009`：**逐字照抄，
+   不替它猜旗標**；`NOTE-013`：能走 stdin 就走 stdin）。
+
+2. 複製一份 profile 並把 `architect` 綁上去：
+   ```powershell
+   Copy-Item config\providers.example.json config\providers.codex-architect.json
+   # 編輯 architect：kind="cli"、command=<上面那支的完整路徑>、
+   #                args/promptArg/promptVia 依步驟 1 的結果、enabled=true
+   ```
+
+3. 切換並確認綁定：`profile_activate` → `profile_describe`
+
+4. 跑一次真實閉環（`architect-only` 路線，跳過情報層以縮小變因）：
+   ```
+   start_job(repoPath="D:\dev-triangle-mcp", userRequest="<一個小改動>",
+             route="architect-only", sourcePaths=["<一兩個檔>"])
+   → dispatch_architect(repoPath=..., jobId=..., shadow=false)
+   → apply_patch(repoPath=..., jobId=...)
+   → run_verification_suite(repoPath=..., suiteName="quick", confirmSuite=true, jobId=...)
+   → job_update(jobId=..., status="SUCCESS")
+   ```
+   外送白名單已含 `<self>`，所以 `D:\dev-triangle-mcp` 本來就允許。
+
+5. **算數的證據**是：`dispatch.targetBaseUrl` 指向那支真的執行檔、job 的
+   `implementation.patchPaths` 有東西、`verification.evidenceLevel == "machine"`、
+   最後 `job_update` 真的落成 `SUCCESS`。
+
+6. 成功後要改的三個地方（**缺一就不算做完**）：
+   - `docs/PROVIDERS.md` 的 `C6` 那一列由 ❌ 改為 ✅ 並附證據
+   - 本檔第四節第 1 項移出「沒做完」清單
+   - `docs/SAI.md` `I2` 的施工輪實跑紀錄補一行
+
+**已知會卡的地方**：
+
+- CLI 印出橫幅／ANSI 色碼會讓 JSON 解析失敗。`dispatch.send_expecting_json` 會**重問
+  一次**「只回 JSON」，第二次還是失敗就報錯——那時要調的是 prompt 或 CLI 旗標，
+  **不是把重問次數加上去**（`NOTE-011` 的維護邊界）。
+- 那支 CLI 若需要互動確認就會卡住不回。`cli_agent` 對「exit 0 但沒有輸出」會明確
+  報錯而不是當成空答案，看到 `printed nothing` 就是這個情形。
+- `codex.exe` 的路徑含版本 hash，更新後 profile 會壞。**`command` 不能經 NL 修**
+  （`NOTE-012`），要改就編輯檔案。
+
 ## 五、接手時最容易踩的坑
 
 1. **不要把 `NOTE-001` 的模型字面值當成違規刪掉。** `ANTIGRAVITY_LEGACY_UNSAFE_MODELS` 是**拒絕清單**，刪掉會讓舊安裝設定裡的模型值復活。`S4.8` 的例外判準是「同一行出現三個識別字之一」，**不是整檔排除**。
