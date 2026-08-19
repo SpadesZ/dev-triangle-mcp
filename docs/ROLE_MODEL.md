@@ -96,10 +96,48 @@ flowchart TB
 | Role | Contract | Current default | Replaceable later? |
 | --- | --- | --- | --- |
 | Orchestrator | Talk to the user, choose routes, review results, give final answer | Codex | Yes |
+| Context Broker | Read a whole repo and return a structured brief naming the files the work will touch | Unset by default | Yes, you choose it |
+| Architect | Turn a brief into a patch and a test plan. Produces a patch; never edits files | Unset by default | Yes, you choose it |
 | Cloud Code Worker | Do bounded remote code work and return plan, patch, PR, or artifacts | Jules | Yes |
-| Local Verifier | Run local checks and submit a structured verification result | Antigravity `agy` | Yes |
+| Local Verifier | Run the target repo's own declared commands and capture exit codes as machine evidence | Built-in suite runner | No, this is the evidence source |
+| Diagnostician | Investigate and advise. Its output is agent-asserted, not evidence | Antigravity `agy` | Yes |
 | Reporter | Provide a narrow completion channel for workers | `dev-triangle-report` MCP | Maybe, but should stay narrow |
 | Ledger | Track jobs, handoffs, statuses, notes, and result paths | `jobs.json` | Maybe, with migration |
+
+Two rows changed meaning and are worth reading twice.
+
+**Local Verifier is no longer Antigravity.** Antigravity moved to Diagnostician.
+An agent that runs the tests and also writes down whether they passed is the
+exact failure this upgrade exists to remove — not because any particular agent
+lies, but because there is then nothing to check the report against. Antigravity
+is still valuable for investigating *why* something failed; it no longer decides
+*whether* it passed.
+
+**Context Broker and Architect have no default.** Not "a default nobody has
+picked yet" — no default, ever. An unconfigured role refuses to run and names the
+line you need to fill in. See `docs/SAI.md` C10 and `INV-12`.
+
+## What The Jules Route Still Carries
+
+The Broker → Architect route does not replace Jules, and the reason is easy to
+miss: `prepare_jules_repo` is the only place in this project that knows how to
+put a local project onto GitHub safely. Four protections live there.
+
+| Protection | Where | Does the Broker → Architect route need it? |
+| --- | --- | --- |
+| Publish safety scan, up to 3,000 files | `scan_repo_for_publish_safety()` | **Rules yes, scan no.** The new route never publishes a repo, so a file-level scan has nothing to guard. What it does need is payload-level scanning, which is why the secret rules were extracted into `providers/redaction.py` — both callers now import one rule set instead of drifting apart |
+| Default `.gitignore` | `ensure_default_gitignore()` | **No.** Nothing is pushed, so there is no ignore list to get wrong |
+| Repos created private by default | `tool_prepare_jules_repo` | **No.** No repo is created |
+| Dry-run by default | `tool_prepare_jules_repo` | **Replaced, not dropped.** The equivalent is `apply_patch` refusing a dirty working tree and recording `appliedAtRef`: this route's undo is a git ref rather than a rehearsal |
+
+**Conclusion: no follow-up work package needed.** The new route bypasses these
+protections because it never enters the situations they guard, and the one
+genuinely transferable piece — the secret rules — was extracted rather than
+copied.
+
+**Jules stays.** It remains the right route when the work is repetitive across
+many files and you want a pull request at the end. If that route is ever removed,
+the publish scan has to be relocated first, not deleted along with it.
 
 ## What Is Implemented Today
 

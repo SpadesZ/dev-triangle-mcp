@@ -260,12 +260,31 @@ If the local project is not on GitHub yet, use `prepare_jules_repo` first. It
 can inspect the folder, add safe `.gitignore` defaults, create a private GitHub
 repo, push the project, and return the Jules source string.
 
+Use **Broker → Architect** (`dispatch_context_brief` then `dispatch_architect`)
+when:
+
+- The repo is large enough that reading all of it with an expensive model is
+  wasteful, but you still want the expensive model writing the code.
+- You want the change delivered as a patch you can inspect and roll back rather
+  than as commits already made.
+- You have configured the `contextBroker` and `architect` roles, and the repo is
+  listed in `config/outbound-repos.json`.
+
+This route sends repository contents to an external API. It refuses for any repo
+not on that allowlist, and there is no default entry.
+
 Use **Antigravity** when:
 
 - The task depends on local files or machine state.
 - You need to run local commands, Docker, or environment checks.
-- You want a second local agent to verify the result.
+- You want a second opinion on *why* something is failing.
 - The final output should be a structured report back to Codex.
+
+Note that Antigravity now reports as a diagnostician, not a verifier. Its
+findings are recorded as `agent_asserted` and cannot by themselves make a job
+`SUCCESS`. For that you need `run_verification_suite`, which runs the commands
+your repo declares in its own `.dev-triangle/verify.json` and records the real
+exit code.
 
 Use **Jules plus Antigravity** when:
 
