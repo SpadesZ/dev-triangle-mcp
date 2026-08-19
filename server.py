@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-from providers import context_broker, models, outbound, profiles
+from providers import architect, context_broker, models, outbound, profiles
 from providers.profiles import ProfileError, RoleDisabled, RoleNotConfigured
 
 # Secret detection lives in one module so the publish scanner and every outbound
@@ -3013,6 +3013,169 @@ def tool_dispatch_context_brief(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Architect dispatch and patch application (SAI W06)
+# ---------------------------------------------------------------------------
+
+
+def save_patch_file(job_id: str, patch_text: str, suffix: str = "") -> Path:
+    ensure_dirs()
+    name = sanitize_filename(f"{job_id}{suffix}", "patch")
+    path = PATCH_DIR / f"{name}.patch"
+    path.write_text(patch_text, encoding="utf-8")
+    return path
+
+
+def tool_dispatch_architect(args: dict[str, Any]) -> dict[str, Any]:
+    repo_path = resolve_project_dir(require_string(args, "repoPath", 2000))
+    job_id = require_string(args, "jobId", 200)
+    user_request = optional_string(args, "userRequest", 20000) or ""
+    run_shadow = optional_bool(args, "shadow", True)
+    profile_name = resolve_profile_name(args)
+
+    binding, status = resolve_role_or_status(profile_name, "architect")
+    if status is not None:
+        return status
+
+    ledger = load_ledger()
+    stored = next((item for item in ledger.get("jobs", []) if item.get("id") == job_id), None)
+    if stored is None:
+        raise ToolError(f"No job found with id {job_id}.")
+    job = job_with_defaults(stored)
+    brief = job["contextBrief"]
+    if not user_request:
+        user_request = job.get("title", "")
+
+    # S7.2: the brief is not the only input. The files it points at go too, so a
+    # lossy brief has somewhere to be caught rather than silently deciding.
+    source_paths = list(dict.fromkeys([*brief.get("impactedFiles", []), *brief.get("sourceRefs", [])]))
+
+    try:
+        primary = architect.create_implementation(binding, repo_path, user_request, brief, source_paths)
+    except outbound.OutboundBlocked as exc:
+        return {"status": "OUTBOUND_BLOCKED", "repoPath": str(repo_path), "message": str(exc)}
+    except architect.ImplementationError as exc:
+        return {"status": "IMPLEMENTATION_REJECTED", "message": str(exc)}
+
+    patch_paths: list[str] = []
+    if primary["patch"].strip():
+        patch_paths.append(str(save_patch_file(job_id, primary["patch"])))
+
+    shadow_record: dict[str, Any] = {}
+    if run_shadow:
+        try:
+            shadow = architect.create_implementation(binding, repo_path, user_request, None, source_paths)
+        except (outbound.OutboundBlocked, architect.ImplementationError) as exc:
+            shadow_record = {"ran": False, "error": str(exc)}
+        else:
+            shadow_path = ""
+            if shadow["patch"].strip():
+                shadow_path = str(save_patch_file(job_id, shadow["patch"], suffix="-shadow"))
+            # Both kept, no automatic comparison yet: comparing early would look
+            # like the shadow experiment already had a conclusion.
+            shadow_record = {
+                "ran": True,
+                "patchPath": shadow_path,
+                "rationale": shadow["rationale"],
+                "targetModel": shadow["targetModel"],
+            }
+
+    implementation = {
+        "author": primary["author"],
+        "patchPaths": patch_paths,
+        "testPlan": primary["testPlan"],
+        "rationale": primary["rationale"],
+        "appliedAtRef": "",
+        "targetBaseUrl": primary["targetBaseUrl"],
+        "targetModel": primary["targetModel"],
+        "shadow": shadow_record,
+    }
+    saved = upsert_job({"id": job_id, "implementation": implementation, "stage": "IMPLEMENTATION"})
+    destination = dispatch_destination(binding, implementation)
+    return {
+        "status": "OK",
+        "jobId": job_id,
+        "implementation": implementation,
+        "dispatch": destination,
+        "job": job_with_defaults(saved),
+        "message": (
+            f"Patch produced by {destination['displayName']} using model {destination['targetModel']} "
+            f"at {destination['targetBaseUrl']}. {len(patch_paths)} patch file(s)."
+        ),
+    }
+
+
+def tool_apply_patch(args: dict[str, Any]) -> dict[str, Any]:
+    repo_path = resolve_project_dir(require_string(args, "repoPath", 2000))
+    job_id = optional_string(args, "jobId", 200)
+    patch_path_arg = optional_string(args, "patchPath", 2000)
+
+    if not is_git_repo(repo_path):
+        raise ToolError(f"{repo_path} is not a git repository, so there would be no way back.")
+
+    patch_path = Path(patch_path_arg).expanduser() if patch_path_arg else None
+    if patch_path is None:
+        if not job_id:
+            raise ToolError("Pass patchPath, or a jobId whose implementation has one.")
+        ledger = load_ledger()
+        stored = next((item for item in ledger.get("jobs", []) if item.get("id") == job_id), None)
+        if stored is None:
+            raise ToolError(f"No job found with id {job_id}.")
+        paths = job_with_defaults(stored)["implementation"].get("patchPaths") or []
+        if not paths:
+            raise ToolError(f"Job {job_id} has no patch to apply.")
+        patch_path = Path(paths[-1])
+    if not patch_path.is_file():
+        raise ToolError(f"Patch file not found: {patch_path}")
+
+    status_text = git_status_porcelain(repo_path)
+    if status_text.strip():
+        # INV-07: without this, a rollback takes the user's own uncommitted work
+        # with it, and they will not find out until they look for it.
+        return {
+            "status": "REFUSED_DIRTY_WORKTREE",
+            "repoPath": str(repo_path),
+            "dirtyPaths": git_dirty_paths(status_text),
+            "message": (
+                "The working tree has uncommitted changes. Applying a patch now would make the "
+                "rollback point ambiguous: git reset would throw away your work along with the patch. "
+                "Commit or stash first."
+            ),
+        }
+
+    applied_at_ref = git_head_sha(repo_path)
+    if not applied_at_ref:
+        raise ToolError("Could not read HEAD, so there would be no rollback point.")
+
+    result = run_native(["git", "apply", "--whitespace=nowarn", str(patch_path)], cwd=repo_path, allow_failure=True)
+    if result["exitCode"] != 0:
+        return {
+            "status": "APPLY_FAILED",
+            "repoPath": str(repo_path),
+            "patchPath": str(patch_path),
+            "appliedAtRef": applied_at_ref,
+            "exitCode": result["exitCode"],
+            "stderrTail": (result["stderr"] or "")[-2000:],
+        }
+
+    payload: dict[str, Any] = {
+        "status": "APPLIED",
+        "repoPath": str(repo_path),
+        "patchPath": str(patch_path),
+        "appliedAtRef": applied_at_ref,
+        "rollbackCommand": f"git -C {repo_path} reset --hard {applied_at_ref}",
+        "changedPaths": git_dirty_paths(git_status_porcelain(repo_path)),
+    }
+    if job_id:
+        ledger = load_ledger()
+        stored = next((item for item in ledger.get("jobs", []) if item.get("id") == job_id), None)
+        implementation = job_with_defaults(stored or {})["implementation"]
+        implementation["appliedAtRef"] = applied_at_ref
+        saved = upsert_job({"id": job_id, "implementation": implementation, "stage": "VERIFICATION"})
+        payload["job"] = job_with_defaults(saved)
+    return payload
+
+
 def schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
     return {"type": "object", "properties": properties, "required": required or [], "additionalProperties": False}
 
@@ -3320,6 +3483,41 @@ TOOLS = [
         ),
     },
     {
+        "name": "dispatch_architect",
+        "title": "Produce Patch From Brief",
+        "description": (
+            "Second leg: send the job's context brief plus the files it points at to the architect role "
+            "and save the returned patch. Produces a patch file only; it never edits the working tree. "
+            "Always tell the user which model and endpoint it went to."
+        ),
+        "inputSchema": schema(
+            {
+                "repoPath": {"type": "string"},
+                "jobId": {"type": "string"},
+                "userRequest": {"type": "string"},
+                "shadow": {"type": "boolean", "default": True},
+                "profile": {"type": "string"},
+            },
+            ["repoPath", "jobId"],
+        ),
+    },
+    {
+        "name": "apply_patch",
+        "title": "Apply Patch Locally",
+        "description": (
+            "Apply a saved patch to a clean working tree and record the commit it was applied on top of, "
+            "so it can be rolled back. Refuses when the working tree is dirty."
+        ),
+        "inputSchema": schema(
+            {
+                "repoPath": {"type": "string"},
+                "jobId": {"type": "string"},
+                "patchPath": {"type": "string"},
+            },
+            ["repoPath"],
+        ),
+    },
+    {
         "name": "profile_describe",
         "title": "Describe Provider Profile",
         "description": (
@@ -3401,6 +3599,8 @@ HANDLERS = {
     # slot at itself, which is why INV-02 matters more after the gate was
     # removed, not less.
     "dispatch_context_brief": tool_dispatch_context_brief,
+    "dispatch_architect": tool_dispatch_architect,
+    "apply_patch": tool_apply_patch,
     "profile_describe": tool_profile_describe,
     "profile_set_role": tool_profile_set_role,
     "profile_revert_last": tool_profile_revert_last,
