@@ -238,6 +238,22 @@ On many Windows installs, the resolved path is:
 
 Use this before trying to run a real handoff.
 
+Optional diagnostics:
+
+- `smokePrint`: runs a short `agy --print` smoke.
+- `smokeTimeoutSec`: timeout for that smoke.
+
+The smoke is diagnostic. Some Antigravity planner/tool-call streams can exit
+with empty stdout, so a failed print smoke does not mean `agy` is missing; it
+means headless completion capture needs the result mailbox/report MCP path.
+If the environment contains the legacy unsafe `Gemini 3.5 Flash (Medium)`
+model value, Dev Triangle ignores it and reports that through `agyModelNote`.
+When stdout is empty but the model response is stored in the Antigravity
+conversation SQLite database, Dev Triangle checks the recent databases under
+`%USERPROFILE%\.gemini\antigravity-cli\conversations` and can mark the smoke
+passed from that fallback. Set `ANTIGRAVITY_AGY_CONVERSATION_DIR` only when a
+test or custom install stores those databases elsewhere.
+
 ### `run_antigravity_handoff`
 
 Runs a prepared handoff through Antigravity CLI.
@@ -253,10 +269,20 @@ Useful options:
 - `dryRun`: builds the command without launching Antigravity.
 - `waitForResult`: waits for the closed-loop result.
 - `resultTimeoutSec`: how long to wait for the result marker.
+- `emptyStdoutResultGraceSec`: short grace wait when `agy --print` exits 0 with
+  empty stdout and no result file.
 - `pollIntervalSec`: how often to check for the result.
 
 The command is considered fully complete when the result path is ready and the
 marker is present.
+
+If `agy --print` exits 0 but stdout is empty and no result appears, the handoff
+is marked `DEGRADED_NO_RESULT`. Treat stdout as diagnostic only; use
+`complete_dev_triangle_handoff` or the result marker as the completion signal.
+Before returning `DEGRADED_NO_RESULT`, Dev Triangle also checks recent
+Antigravity conversation databases for `DEV_TRIANGLE_RESULT_READY`. If the
+marker is found in a non-user response step, the server writes the recovered
+content to the result path and marks the handoff `COMPLETED`.
 
 ### `antigravity_get_result`
 
@@ -281,6 +307,11 @@ Checks server paths, ledger counts, Jules key presence, optional Jules
 reachability, and Antigravity CLI detection.
 
 Use this as the first diagnostic tool.
+
+Optional diagnostics:
+
+- `includeAntigravityPrintSmoke`: run the `agy --print` smoke.
+- `antigravitySmokeTimeoutSec`: timeout for that smoke.
 
 ### `job_list`
 
