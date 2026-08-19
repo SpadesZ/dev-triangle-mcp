@@ -1,3 +1,21 @@
+# Dev Triangle MCP source maintenance contract
+# 上下游: 由 CI 與 .dev-triangle/verify.json 的 default suite 直接以 python 執行；把 antigravity_report_server.py 當成真的 stdio 子行程啟動；狀態寫在 repo 底下的 .dev-triangle-report-test，不碰使用者的帳本
+# 檔案路徑: dev-triangle-mcp/tests/report_server_smoke.py
+# 產生時間: 2026-08-19 17:30 +08:00
+# 版本: v1.1
+# 功能說明: 檢查給 worker 用的那台小伺服器只露出該露的兩支工具，而且送進來的結果會被正確標成「代理人自述」寫進共用帳本
+# 模組定位: 端對端煙霧測試，同時是 INV-02(工具面要窄)與 INV-03(自述要標記)的守門人。它「是」對回報介面的檢查；它「不是」對主伺服器的檢查(那是 protocol_smoke.py)
+# 主要責任:
+#   1. 斷言工具集合剛好是 dev_triangle_report_health 與 complete_dev_triangle_handoff 兩支
+#   2. 送一筆完成回報，確認 result markdown 帶結束標記
+#   3. 斷言帳本裡的 submittedResult 標了 evidenceLevel: agent_asserted 並帶 evidenceRef 欄位
+# 維護提醒:
+#   - 第 1 條的斷言用的是集合相等而不是包含，這是刻意的。多出任何一支工具都必須讓這裡變紅
+#   - 不得移除 evidenceLevel 斷言。少了它，回報伺服器停止標記時沒有任何東西會紅(2026-08-19 突變測試實際踩到過)
+# 驗證方式:
+#   - python tests/report_server_smoke.py
+# ------------------------------------------------------------
+
 """Smoke test for the report-only MCP server.
 
 This verifies the narrow worker-facing surface:

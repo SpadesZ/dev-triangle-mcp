@@ -1,3 +1,23 @@
+# Dev Triangle MCP source maintenance contract
+# 上下游: 上游是 worker/verifier 代理人(Antigravity、Gemini CLI)經 stdio 呼叫；讀寫的是與 server.py 共用的 %USERPROFILE%\.dev-triangle 帳本與 result 信箱；不呼叫任何外部 API
+# 檔案路徑: dev-triangle-mcp/antigravity_report_server.py
+# 產生時間: 2026-08-19 17:30 +08:00
+# 版本: v0.2.0
+# 功能說明: 只有兩支工具的極小 MCP 伺服器，讓跑完驗證的 worker 有一條「我做完了，這是結果」的回報管道，而不必看到整個控制面
+# 模組定位: L7 回報層。它「是」worker 唯一該掛上的 MCP 伺服器；它「不是」控制面——這裡沒有建 job、沒有改 job 狀態、沒有 Jules 工具、也沒有任何可以執行指令的東西
+# 主要責任:
+#   1. tool_dev_triangle_report_health —— 讓 worker 確認信箱路徑對不對
+#   2. tool_complete_dev_triangle_handoff —— 寫 result markdown 並更新帳本的 handoff
+#   3. 把 worker 送進來的一切標成 evidenceLevel: agent_asserted
+# 維護提醒:
+#   - 不得在此新增任何工具。提案 G-4「回報伺服器保持輕量」已完全採納，唯一允許的擴充是可選欄位
+#   - 不得移除 submittedResult 的 evidenceLevel 標記。少了它，帳本就分不出「量到的」與「宣稱的」，INV-03 會失去判斷依據
+#   - 代理人可以用 evidenceRef 引用機器憑據，但不得製造憑據。憑據只能由 server.py 的 run_verification_suite 產生
+#   - 結果寫入必須維持 RESULT_DIR / HANDOFF_DIR 的路徑白名單
+# 驗證方式:
+#   - python tests/report_server_smoke.py
+# ------------------------------------------------------------
+
 """Report-only MCP server for worker/verifier agents.
 
 This server is intentionally tiny. Antigravity and future worker agents should

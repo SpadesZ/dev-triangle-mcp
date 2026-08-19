@@ -13,6 +13,27 @@ Human note:
   provided through the shell environment or a real secret manager.
 #>
 
+# Dev Triangle MCP source maintenance contract
+# 上下游: 由使用者手動執行；改寫 ~/.codex/config.toml、~/.gemini/config/mcp_config.json 與 Antigravity IDE 的 mcp.json；建立 $HOME\.dev-triangle 底下的狀態目錄。改任何檔案前都先備份
+# 檔案路徑: dev-triangle-mcp/scripts/install-local.ps1
+# 產生時間: 2026-08-19 17:35 +08:00
+# 版本: v1.1
+# 功能說明: 把這一份 checkout 掛到本機的三個客戶端上。Codex 拿到完整控制面，Antigravity 與 Gemini 只拿到回報伺服器
+# 模組定位: 安裝器。它「是」設定的寫入者；它「不是」檔案複製器——它只把路徑指向 -ToolRoot，程式碼留在原地，所以換 checkout 只要重跑一次並指定新的 ToolRoot
+# 主要責任:
+#   1. 解析 python 與 agy 路徑(優先用 Codex 內建的 python)
+#   2. Backup-File 先備份三份設定
+#   3. Set-CodexDevTriangleBlock 只替換 dev_triangle 區塊，保留使用者其他 MCP 伺服器
+#   4. Upsert-GeminiConfig / Upsert-IdeConfig 主動移除 worker 端的 dev-triangle 完整控制面
+# 維護提醒:
+#   - 不得把 JULES_API_KEY 或任何金鑰值寫進設定檔。這裡只列環境變數「名稱」讓 Codex 繼承(INV-04)
+#   - 第 4 項的 Remove-JsonPropertyIfPresent 不得省略。舊版安裝可能把完整控制面掛到 worker 端，不主動移除就會一直留著(INV-02)
+#   - 本腳本不複製檔案。ToolRoot 指到哪裡，客戶端就載入哪裡的 server.py——換 checkout 時這是唯一要動的東西
+# 驗證方式:
+#   - .\scripts\install-local.ps1 -ToolRoot D:\dev-triangle-mcp
+#   - .\scripts\doctor.ps1
+# ------------------------------------------------------------
+
 param(
   [string]$ToolRoot = (Split-Path -Parent (Split-Path -Parent $PSCommandPath)),
   [string]$StateRoot = (Join-Path $HOME ".dev-triangle"),

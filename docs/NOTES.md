@@ -26,6 +26,7 @@
 | NOTE-005 | profile 載入錯誤在 agy 模型解析路徑上轉成 note，不轉成例外 | 健康檢查與 CLI 偵測的可用性 |
 | NOTE-006 | 逾時必須終止整棵行程樹，不是只殺父行程 | 孤兒行程鎖住檔案與埠口 |
 | NOTE-007 | `verify.json` 的 hash 必須連 `git HEAD` 一起算 | `VUL-03` TOCTOU；`F4` 惡意 repo |
+| NOTE-008 | `S4.9` 的掃描限定在指派與 `return` 位置，比 SAI 的字面 grep 窄 | 量尺不得誤殺，也不得被放寬 |
 
 ---
 
@@ -166,3 +167,24 @@
   ```
   突變：把 `suite_fingerprint()` 改成只吃 `manifest_text` → **必須變紅**。
 - **維護邊界**：這道閘門**不受**「設定變更不設閘門」那道裁決（`I4` gate #8／#9）涵蓋。那道裁決講的是**使用者設定自己的工具**；這道擋的是**第三方 repo 的檔案能不能在你的機器上跑指令**。詳見 `docs/decisions/2026-08-19-three-vendor-upgrade.md`。
+
+---
+
+## NOTE-008 `S4.9` 的掃描限定在指派與 `return` 位置，比 SAI 的字面 grep 窄
+
+- **決策日期**：2026-08-19
+- **適用範圍**：`tests/test_repo_integrity.py` 的 `SILENT_DEFAULT_PATTERNS` 與 `is_silent_default()`；`docs/SAI.md` `S4.9` 的量法。
+- **決策**：`silent_default_count` 只計算**指派**（`model = ... or "..."`）與 **`return`**（`return ... or "..."`）兩種位置，不計算所有出現 `model`／`baseUrl`／`provider` 又出現 `or "..."` 的行。此偏離必須由 `test_silent_default_detector_actually_detects` 同時證明「該抓的抓得到」與「不該抓的沒抓」。
+- **原因**：SAI `S4.9` 給的量法是字面 grep，2026-08-19 首次執行時在乾淨的程式碼上命中兩處，**兩處都不是它要抓的東西**：
+  - `"id": short_id(provider or "job")` —— `provider` 在這裡是 job id 的前綴，`"job"` 是前綴的預設值，跟模型無關。
+  - `f"...{changes['baseUrl'] or '(adapter default)'}"` —— 這是**警示訊息裡的顯示字串**，用來告訴使用者「原本沒設，所以走 adapter 內建端點」。它不決定任何行為。
+
+  一個會誤殺的量尺跟一個永遠是綠的量尺一樣沒用：真正的違規混在誤報裡，下一個人只會把整條檢查關掉。
+  **但收窄有風險**：收窄的動作本身就是「放寬量尺」最常見的偽裝。因此這則 NOTE 的驗證欄不只驗違規抓不抓得到，還把**兩個被放行的形狀逐字寫進測試**——要再放寬就必須動那支測試，而動它會被看見。
+- **驗證**：
+  ```powershell
+  python -m pytest -q tests\test_repo_integrity.py::test_silent_default_detector_actually_detects
+  ```
+  該測試斷言三種真違規（`model = ... or`、`base_url = ... or`、`return ... or`）都抓得到，且上述兩個被放行的形狀不會命中。
+  突變：把 `SILENT_DEFAULT_PATTERNS` 清空 → **必須變紅**。
+- **維護邊界**：要再排除新的形狀，必須（a）在此列出那一行的原文與它為什麼不決定行為，（b）在測試裡加一條對應的 `assert not is_silent_default(...)`。**不得**直接放寬正則或整個檔案排除。

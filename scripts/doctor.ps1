@@ -8,6 +8,26 @@ Antigravity/Gemini MCP config. It is intentionally read-only so it can be run
 before and after install changes.
 #>
 
+# Dev Triangle MCP source maintenance contract
+# 上下游: 由維護者手動執行；讀 ~/.codex/config.toml、~/.gemini/config/mcp_config.json 與 Antigravity IDE 的 mcp.json，並探測 python 與 agy；全程唯讀，不改任何設定
+# 檔案路徑: dev-triangle-mcp/scripts/doctor.ps1
+# 產生時間: 2026-08-19 17:35 +08:00
+# 版本: v1.1
+# 功能說明: 回答「我這台機器上的安裝是不是好的」。逐項檢查檔案位置、直譯器、agy、以及三份客戶端設定，任一項不通過就以 exit 1 收場
+# 模組定位: 安裝健康檢查，同時是 S4.5 worker_control_plane_exposure 這條量尺的量法。它「是」唯讀的診斷；它「不是」安裝器(那是 install-local.ps1)，也「不是」煙霧測試(那是 smoke.ps1)
+# 主要責任:
+#   1. 檢查 toolRoot / stateRoot / 兩支伺服器檔案存在
+#   2. 探測 python 與 agy 版本
+#   3. codexConfigHasDevTriangle —— Codex 設定是否指向這一份 server.py
+#   4. geminiOnlyReportServer / ideOnlyReportServer —— worker 端只能看到 dev-triangle-report
+# 維護提醒:
+#   - 第 4 項是 INV-02 的量法，不得放寬成「包含 dev-triangle-report 就算過」。它同時要求「不含 dev-triangle」，少了後半段這條量尺就永遠是綠的
+#   - 本腳本必須維持唯讀。它會在安裝前後各跑一次，有副作用就無法比較
+#   - codexConfigHasDevTriangle 變紅最常見的原因不是設定壞掉，而是 Codex 指向另一份 checkout
+# 驗證方式:
+#   - .\scripts\doctor.ps1
+# ------------------------------------------------------------
+
 param(
   [string]$ToolRoot = (Split-Path -Parent (Split-Path -Parent $PSCommandPath)),
   [string]$StateRoot = (Join-Path $HOME ".dev-triangle"),

@@ -1,3 +1,28 @@
+# Dev Triangle MCP source maintenance contract
+# 上下游: 上游是 Orchestrator 客戶端(預設 Codex)經 stdio 呼叫；讀 config/providers.*.json 與目標 repo 的 .dev-triangle/verify.json；寫 %USERPROFILE%\.dev-triangle 底下的 jobs.json、patches、logs；外部走 Jules REST API 與 providers/ 底下的 adapter
+# 檔案路徑: dev-triangle-mcp/server.py
+# 產生時間: 2026-08-19 17:30 +08:00
+# 版本: v0.3.0
+# 功能說明: 完整控制面的 MCP 伺服器。把「使用者提一個需求」到「有機器憑據支撐的 SUCCESS」之間的每一站接起來——建 job、產情報摘要、產 patch、套 patch、跑目標 repo 自己宣告的驗證指令、裁決、失敗時重試一次
+# 模組定位: L0 受理層與各層的組裝點。它「是」Orchestrator 唯一該看到的伺服器；它「不是」worker 該看到的東西(worker 只給 antigravity_report_server.py)，也「不是」通用 shell 執行器——本機執行僅限目標 repo 自宣告的白名單 suite
+# 主要責任:
+#   1. Jules 路線: tool_jules_* 與 tool_prepare_jules_repo(發布前安全掃描)
+#   2. Antigravity 路線: tool_create_antigravity_handoff / tool_run_antigravity_handoff / 結果回收
+#   3. 兩棒路線: tool_dispatch_context_brief -> tool_dispatch_architect -> tool_apply_patch
+#   4. 驗證與裁決: tool_run_verification_suite -> evaluate_quality_gate -> tool_self_heal
+#   5. 設定: tool_profile_describe / tool_profile_set_role / tool_profile_revert_last
+#   6. 帳本: load_ledger / upsert_job / job_with_defaults(v1 相容讀取，不遷移)
+# 維護提醒:
+#   - 不得新增任何可由呼叫端傳入指令字串的工具。tool_run_verification_suite 的參數刻意不含 command，那是 INV-01 的實作形式
+#   - 不得把本檔的任何工具加進 antigravity_report_server.py。能跑指令又能自己寫結果的 worker 正是 INV-02 要防的形狀
+#   - 不得在任何地方寫入預設模型。設定解析鏈的末端是 ROLE_NOT_CONFIGURED，不是 fallback(INV-12)
+#   - upsert_job 必須維持 dict.update 語意；改成整筆覆寫會在並行寫入時清掉別人剛寫的欄位
+#   - v0.3 新增: JOB_SCHEMA_VERSION 2、受限驗證執行器、Quality Gate、NL 設定橋接、兩棒 adapter
+# 驗證方式:
+#   - python -m pytest -q tests
+#   - python tests/protocol_smoke.py
+# ------------------------------------------------------------
+
 """Dev Triangle MCP main server.
 
 This process is the full control-plane MCP server intended for the

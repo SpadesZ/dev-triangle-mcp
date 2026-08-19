@@ -1,3 +1,20 @@
+# Dev Triangle MCP source maintenance contract
+# 上下游: 由維護者手動執行；反覆呼叫 py_compile、tests/protocol_smoke.py 與健康檢查；把每一輪結果寫進狀態目錄底下的紀錄檔，不改任何原始碼
+# 檔案路徑: dev-triangle-mcp/scripts/optimization_loop.py
+# 產生時間: 2026-08-19 17:35 +08:00
+# 版本: v1.1
+# 功能說明: 改完伺服器介面或安裝流程之後，反覆跑同一組檢查並留下歷史，讓「偶爾才失敗」的問題有機會現形
+# 模組定位: 操作者信心迴圈。它「是」人工回歸的輔助腳本；它「不是」CI(那是 .github/workflows/ci.yml)、「不是」機器學習意義上的最佳化器，也「不是」憑據來源
+# 主要責任:
+#   1. 依次跑編譯檢查與 protocol smoke
+#   2. 把每一輪結果與候選改進筆記寫進狀態目錄
+# 維護提醒:
+#   - 不得把本腳本的輸出當成 machine evidence。憑據只能由 server.py 的 run_verification_suite 產生(INV-03)
+#   - 不得讓本腳本自動修改原始碼。它是觀察者，不是修復者
+# 驗證方式:
+#   - python -m py_compile scripts/optimization_loop.py
+# ------------------------------------------------------------
+
 """Repeated local verification loop for Dev Triangle MCP.
 
 This script is not an optimizer in the machine-learning sense. It is an

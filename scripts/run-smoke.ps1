@@ -8,6 +8,22 @@ prefer scripts/smoke.ps1 because it also checks the report server and agy
 detection.
 #>
 
+# Dev Triangle MCP source maintenance contract
+# 上下游: 由記得舊腳本名稱的使用者執行；轉呼叫 tests/protocol_smoke.py；不寫任何設定
+# 檔案路徑: dev-triangle-mcp/scripts/run-smoke.ps1
+# 產生時間: 2026-08-19 17:35 +08:00
+# 版本: v1.1
+# 功能說明: 舊名稱的相容包裝，只跑主伺服器的 protocol smoke
+# 模組定位: 相容層。它「是」保留給既有使用者的別名；它「不是」完整體檢——完整版是 scripts/smoke.ps1，那支還會檢查回報伺服器與 agy 偵測
+# 主要責任:
+#   1. 解析直譯器並執行 tests/protocol_smoke.py，且明確檢查 $LASTEXITCODE
+# 維護提醒:
+#   - 不得在本檔新增功能。新的檢查一律加進 scripts/smoke.ps1，否則兩支會各自漂移
+#   - 不得刪除本檔。docs/PROVIDERS.md 的相容包裝規則要求既有入口名稱保留
+# 驗證方式:
+#   - .\scripts\run-smoke.ps1
+# ------------------------------------------------------------
+
 $ErrorActionPreference = "Stop"
 
 function Invoke-Native {

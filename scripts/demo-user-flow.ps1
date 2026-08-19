@@ -12,6 +12,25 @@ Human note:
   intentionally separate from CI because it needs a locally authenticated agy.
 #>
 
+# Dev Triangle MCP source maintenance contract
+# 上下游: 由維護者手動執行；建一個臨時 Python 專案、經 server.py 建 handoff、跑真的 agy CLI、等 antigravity_report_server.py 回填結果，最後把 JSON 報告寫進 demo-output
+# 檔案路徑: dev-triangle-mcp/scripts/demo-user-flow.ps1
+# 產生時間: 2026-08-19 17:35 +08:00
+# 版本: v1.1
+# 功能說明: 用最接近真實使用者的方式把整條路走一遍——這是唯一會呼叫真的 agy、而不是假執行檔的檢查
+# 模組定位: 端對端使用者流程演示。它「是」對「使用者體驗起來是什麼樣」最接近的自動化檢查；它「不是」CI 的一部分，因為它需要本機已登入的 agy，在 CI 上必然失敗
+# 主要責任:
+#   1. 建立臨時專案與 handoff
+#   2. 呼叫真的 agy CLI 執行驗證
+#   3. 等待回報伺服器送回結果，逾時就明確失敗
+#   4. 輸出 JSON 演示報告
+# 維護提醒:
+#   - 不得把本腳本加進 .github/workflows/ci.yml。它依賴本機已認證的 agy，放進 CI 只會得到一支長期紅燈而沒人看
+#   - 本腳本的輸出是代理人自述，不是機器憑據。要 exit code 請用 server.py 的 run_verification_suite(INV-03)
+# 驗證方式:
+#   - .\scripts\demo-user-flow.ps1
+# ------------------------------------------------------------
+
 param(
   [string]$ToolRoot = (Split-Path -Parent (Split-Path -Parent $PSCommandPath)),
   [string]$StateRoot = (Join-Path $HOME ".dev-triangle"),

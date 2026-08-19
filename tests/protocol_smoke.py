@@ -1,3 +1,23 @@
+# Dev Triangle MCP source maintenance contract
+# 上下游: 由 CI 與 .dev-triangle/verify.json 的 default suite 直接以 python 執行；把 server.py 當成真的 stdio 子行程啟動；狀態寫在 repo 底下的 .dev-triangle-test/<pid>，不碰使用者的帳本
+# 檔案路徑: dev-triangle-mcp/tests/protocol_smoke.py
+# 產生時間: 2026-08-19 17:30 +08:00
+# 版本: v1.1
+# 功能說明: 用真的 JSON-RPC 對話把主伺服器從頭走一遍——初始化、列工具、建 handoff、用假的 agy 跑完整閉環、回收結果。它回答的是「這台伺服器現在還起得來、還講得通協定嗎」
+# 模組定位: 端對端煙霧測試。它「是」協定層與整合層的檢查；它「不是」單元測試(那些在 tests/test_*.py)，也「不是」對外部服務的測試——所有外部指令都用本檔自己造的假執行檔
+# 主要責任:
+#   1. 啟動 server.py 並完成 initialize / tools list
+#   2. 斷言關鍵工具都在，包含 run_verification_suite
+#   3. 用 fake agy 走完 handoff -> 執行 -> 結果回收
+#   4. 涵蓋空 stdout、transcript 回收、conversation DB 回收三條退路
+# 維護提醒:
+#   - 不得改成直接 import server。這支測試的價值就在於它走的是真的子行程與真的 stdio 協定
+#   - 新增工具時要在此加一條 assert，否則工具消失不會有任何東西變紅
+#   - fake 執行檔的模型字面值是 NOTE-001 的具名例外，不得改成真的模型名，也不得刪掉
+# 驗證方式:
+#   - python tests/protocol_smoke.py
+# ------------------------------------------------------------
+
 """Smoke test for the main Dev Triangle MCP server.
 
 The test runs the server as a real stdio MCP process and exercises the important
