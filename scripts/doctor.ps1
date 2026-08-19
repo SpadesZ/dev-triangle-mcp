@@ -96,10 +96,11 @@ $IdeConfig = Join-Path $env:APPDATA "Antigravity IDE\User\mcp.json"
 # replaceable, so this check asks "is at least one client pointed at this
 # checkout", not "is Codex pointed at it".
 $OrchestratorConfigs = [ordered]@{
-  codex          = $CodexConfig
-  claudeCode     = Join-Path $HOME ".claude.json"
-  claudeSettings = Join-Path $HOME ".claude\settings.json"
-  claudeDesktop  = Join-Path $env:APPDATA "Claude\claude_desktop_config.json"
+  codex             = $CodexConfig
+  claudeCodeUser    = Join-Path $HOME ".claude.json"
+  claudeCodeProject = Join-Path $ToolRoot ".mcp.json"
+  claudeSettings    = Join-Path $HOME ".claude\settings.json"
+  claudeDesktop     = Join-Path $env:APPDATA "Claude\claude_desktop_config.json"
 }
 
 function Get-OrchestratorsPointingHere {

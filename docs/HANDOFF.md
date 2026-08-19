@@ -127,13 +127,30 @@ S4.1 machine_verified_rate = 1.000 (1/1)
 
 跑通一次就是這條路線第一次的真實證據。
 
-### 2. Claude **Code** 尚未掛上（Claude Desktop 已完成）
+### 2. Claude 端已用 `.mcp.json` 掛上（`claude_desktop_config.json` 這條路是死的）
 
-`install-local.ps1 -Orchestrator both` **已於 2026-08-19 實機跑過**，`doctor.ps1` 回報
-`orchestratorConfigured  codex, claudeDesktop`，四份設定各留一份 `.dev-triangle-backup-*`。
+**現況**：`doctor.ps1` 回報 `orchestratorConfigured  codex, claudeCodeProject`。
+在 `D:\dev-triangle-mcp` 開 Claude Code、核准伺服器之後，30 支工具就會出現。
 
-還沒完成的是 **Claude Code**（終端／IDE 的那一個，跟 Claude Desktop 是不同客戶端）。
-`~/.claude.json` 目前**沒有 `mcpServers` 鍵**，代表那道指令還沒跑。
+實測（2026-08-19，用 `.mcp.json` 裡的設定實際啟動）：
+
+```
+ledgerPath : C:\Users\Franky Kuo\.dev-triangle\jobs.json   ← 共用帳本，不是 fallback
+tool count : 30
+```
+
+⚠️ **`claude_desktop_config.json` 那條路走不通，別再試。** 安裝當下 `doctor.ps1` 確實回報
+`claudeDesktop` PASS，三小時後那個鍵自己消失了——檔案大小精確回到安裝前的 14016 bytes，
+App 用自己的狀態重寫了整個檔。詳見 `NOTE-014`，那則 NOTE 存在的目的就是擋住下一個人
+「幫忙把它加回來」。
+
+**還沒做的是 user scope**（讓 dev_triangle 在**所有**專案都看得到，不只 `D:\dev-triangle-mcp`）：
+
+- `claude` CLI **不在本機 PATH 上**（`where.exe` 找不到，常見安裝位置都沒有），所以
+  `claude mcp add` 這條在這台機器上跑不了。
+- `~/.claude.json` 目前**沒有 `mcpServers` 鍵**。要手動加的話**先關掉 Claude Code**——
+  它會重寫那個檔（41.5 KB，含 `projects` 歷史與 `oauthAccount`），開著改會被吃掉，
+  跟上面 desktop 的情況一模一樣。
 
 ⚠️ **這道指令一定要帶 `-e`。** `server.py` 在沒有 `DEV_TRIANGLE_HOME` 時會退回
 `<ToolRoot>\.dev-triangle`，實測：

@@ -268,10 +268,10 @@ $devTriangleForClaude = [pscustomobject]@{
   }
 }
 
-function Upsert-ClaudeDesktopConfig {
-  # Claude Desktop uses the same mcpServers shape as the Gemini CLI config.
-  # Unlike the worker-side configs, this one gets the FULL control plane,
-  # because Claude here is acting as the orchestrator, not as a worker.
+function Upsert-ClaudeMcpConfig {
+  # Same mcpServers shape as the Gemini CLI config. Unlike the worker-side
+  # configs, this one gets the FULL control plane, because Claude here is
+  # acting as the orchestrator, not as a worker.
   param([string]$Path, [object]$ServerConfig)
   $json = Read-JsonObject -Path $Path -RootProperty "mcpServers"
   if (-not ($json.PSObject.Properties.Name -contains "mcpServers") -or $null -eq $json.mcpServers) {
@@ -292,9 +292,10 @@ if ($Orchestrator -in @("codex", "both")) {
 }
 
 if ($Orchestrator -in @("claude", "both")) {
-  $backups += Backup-File -Path $ClaudeDesktopConfig
-  Upsert-ClaudeDesktopConfig -Path $ClaudeDesktopConfig -ServerConfig $devTriangleForClaude
-  $installedFor += "claude-desktop"
+  # NOTE(NOTE-014): claude_desktop_config.json is NOT written here. The app
+  # rewrites that file from its own state and drops anything we add, which
+  # produces a doctor check that passes at install time and goes red hours
+  # later on its own. .mcp.json is a file nothing else owns.
   # Claude Code keeps user-scope MCP servers in ~/.claude.json, a large file it
   # owns and rewrites itself. Rewriting it from here risks clobbering project
   # history for no good reason when a supported command exists - so print the
@@ -304,14 +305,23 @@ if ($Orchestrator -in @("claude", "both")) {
   # back to <ToolRoot>\.dev-triangle, so Claude Code would keep a second, empty
   # ledger while Codex and Claude Desktop share the real one - two orchestrators
   # writing separate books, with no error to notice.
+  # Project scope: a small file this installer owns outright, so there is no
+  # race with Claude Code rewriting its own ~/.claude.json while it is running.
+  $ProjectMcpConfig = Join-Path $ToolRoot ".mcp.json"
+  $backups += Backup-File -Path $ProjectMcpConfig
+  Upsert-ClaudeMcpConfig -Path $ProjectMcpConfig -ServerConfig $devTriangleForClaude
+  $installedFor += "claude-code-project"
+
   $claudeCodeCommand = "claude mcp add dev-triangle --scope user" +
     " -e DEV_TRIANGLE_HOME=`"$StateRoot`"" +
     " -e ANTIGRAVITY_HANDOFF_DIR=`"$HandoffRoot`"" +
     " -e ANTIGRAVITY_COMMAND=`"$AgyPath`"" +
     " -- `"$PythonPath`" `"$ServerPath`""
-  $notes += "For Claude Code, run: $claudeCodeCommand"
-  $notes += "The -e flags matter: without DEV_TRIANGLE_HOME, Claude Code gets its own empty ledger at $ToolRoot\.dev-triangle instead of sharing $StateRoot."
-  $notes += "If your claude CLI does not accept -e, add the same mcpServers entry to ~/.claude.json by hand - the shape is identical to $ClaudeDesktopConfig."
+  $notes += "Claude Code, this project: wrote $ProjectMcpConfig. Open Claude Code in $ToolRoot and approve the server when prompted."
+  $notes += "Claude Code, every project (optional): $claudeCodeCommand"
+  $notes += "No claude CLI on PATH? Add the same mcpServers entry to ~/.claude.json by hand - the shape is identical to $ProjectMcpConfig. Close Claude Code first: it rewrites that file itself and would drop the change."
+  $notes += "The env block is not optional: without DEV_TRIANGLE_HOME, Claude Code keeps its own empty ledger at $ToolRoot\.dev-triangle instead of sharing $StateRoot."
+  $notes += "Not written: $ClaudeDesktopConfig. That file is rewritten by the app from its own state, so an entry added here disappears within hours - see docs/NOTES.md NOTE-014."
 }
 
 # Worker-side config is written regardless of who orchestrates: these two get

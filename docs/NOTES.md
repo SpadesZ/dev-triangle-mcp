@@ -32,6 +32,7 @@
 | NOTE-011 | 不做自動換模型的備援鏈 | 靜默降級；擁有者裁決用 profile 切換 |
 | NOTE-012 | `command`／`args` 永遠不可經 NL 通道寫入 | `F17` 從「改端點」升級成「跑任意程式」 |
 | NOTE-013 | CLI 的 prompt 預設走 stdin，不走命令列引數 | Windows `.cmd` shim 會切斷多行；命令列有長度上限 |
+| NOTE-014 | 不寫 `claude_desktop_config.json`，Claude 走 `.mcp.json` | App 會用自己的狀態重寫該檔，造成「當下綠、幾小時後自己變紅」的假訊號 |
 
 ---
 
@@ -294,3 +295,33 @@
   該測試用一支真的假 CLI（Windows 上就是 `.cmd` shim），送一個帶換行的 prompt，斷言完整內容原封抵達。
   突變：把 `prompt_via` 的預設從 `"stdin"` 改成 `"arg"` → **必須變紅**（在 Windows 上；POSIX 上換行可以存活，所以該測試另外斷言 payload 長度超過命令列上限的情境）。
 - **維護邊界**：`promptVia: "arg"` 保留給真的只吃引數的 CLI，但用它時 payload 長度風險由使用者承擔。**不得為了「看起來比較直觀」把預設換回引數。**
+
+---
+
+## NOTE-014 不寫 `claude_desktop_config.json`，Claude 走專案範圍的 `.mcp.json`
+
+- **決策日期**：2026-08-19
+- **適用範圍**：`scripts/install-local.ps1` 的 `-Orchestrator claude|both` 分支；`scripts/doctor.ps1` 的 `orchestratorConfigured` 掃描清單。
+- **決策**：安裝器**不寫** `%APPDATA%\Claude\claude_desktop_config.json`。Claude 這一側改為在 `<ToolRoot>\.mcp.json` 產生專案範圍的 MCP 設定（`.gitignore` 掉，因為裡面是這台機器的絕對路徑）。`doctor.ps1` 仍會掃描 desktop 設定——若別的版本或別的安裝方式把它放在那裡，認得出來是好事——但**安裝器不負責寫它**。
+- **原因**：這是 2026-08-19 實際觀察到的，不是推測。
+
+  | 檔案狀態 | 時間 | 大小 | 含 `mcpServers` |
+  |---|---|---|---|
+  | 安裝前備份 | 17:35 | 14016 | ❌ |
+  | 安裝後（`doctor.ps1` 當時回報 `claudeDesktop` PASS） | 17:35 | 變大 | ✅ |
+  | 三小時後 | **20:34** | **14016** | **❌** |
+
+  大小**精確回到安裝前的 14016 bytes**，內容全是 `preferences` 與 `epitaxy` 狀態——App 用它自己記憶體裡的狀態重寫了整個檔，把外部加進去的鍵抹掉了。對照組：`~/.codex/config.toml` 的條目完好無損，因為沒有別的程式擁有那個檔。
+
+  **這比「沒裝成功」更糟**：安裝當下 `doctor.ps1` 是綠的，幾小時後自己變紅，而且沒有任何事件說明為什麼。一個會自己從綠變紅的檢查，會訓練使用者忽略它——那正是 `S4.7`／`S4.8` 那類「量尺必須可信」的同一個原則。
+
+  同樣的理由也適用於 `~/.claude.json`（Claude Code 自己擁有並持續重寫，實測 41.5 KB，含 `projects` 歷史與 `oauthAccount`）。要掛 user scope 請用 `claude mcp add`，或**先關掉 Claude Code** 再手動編輯。
+- **驗證**：
+  ```powershell
+  .\scripts\doctor.ps1     # orchestratorConfigured 應含 claudeCodeProject
+  ```
+  以及直接用 `.mcp.json` 裡的設定啟動一次，確認它指到共用帳本而不是 fallback：
+  ```powershell
+  # 2026-08-19 實測：ledgerPath = C:\Users\Franky Kuo\.dev-triangle\jobs.json，tool count = 30
+  ```
+- **維護邊界**：哪天 Claude Desktop 改成用一個外部可寫、且它不會覆寫的 MCP 設定檔，這則 NOTE 就可以作廢——但作廢前必須**先觀察夠久**（至少跨一次 App 重啟），確認寫進去的東西真的留得住。**不得只因為安裝當下 doctor 是綠的就認定成功**，那正是本則 NOTE 記錄的錯誤。
