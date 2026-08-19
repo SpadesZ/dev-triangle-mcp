@@ -3176,6 +3176,168 @@ def tool_apply_patch(args: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+# ---------------------------------------------------------------------------
+# Self-heal loop (SAI W07)
+#
+# One retry by owner decision (I4 gate #4), hard-capped at three no matter what
+# a profile asks for. Every attempt books its cost: an automatic retry loop with
+# no cost column is a loop with no brakes.
+# ---------------------------------------------------------------------------
+
+SELF_HEAL_LOG_TAIL_BYTES = 8000
+
+
+def read_log_tail(path_value: str, limit: int = SELF_HEAL_LOG_TAIL_BYTES) -> str:
+    if not path_value:
+        return ""
+    path = Path(path_value)
+    if not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return text[-limit:]
+
+
+def self_heal_budget(job: dict[str, Any]) -> int:
+    requested = job.get("selfHeal", {}).get("maxAttempts", SELF_HEAL_DEFAULT_MAX_ATTEMPTS)
+    if isinstance(requested, bool) or not isinstance(requested, int) or requested < 0:
+        requested = SELF_HEAL_DEFAULT_MAX_ATTEMPTS
+    # The cap is in code, not in configuration. A profile that asks for 50
+    # retries is asking for a bill, not for a feature.
+    return min(requested, SELF_HEAL_HARD_CAP)
+
+
+def tool_self_heal(args: dict[str, Any]) -> dict[str, Any]:
+    repo_path = resolve_project_dir(require_string(args, "repoPath", 2000))
+    job_id = require_string(args, "jobId", 200)
+    suite_name = optional_string(args, "suiteName", 200) or "default"
+    profile_name = resolve_profile_name(args)
+
+    ledger = load_ledger()
+    stored = next((item for item in ledger.get("jobs", []) if item.get("id") == job_id), None)
+    if stored is None:
+        raise ToolError(f"No job found with id {job_id}.")
+    job = job_with_defaults(stored)
+    verification = job["verification"]
+    if verification.get("exitCode") == 0 and verification.get("evidenceLevel") == EVIDENCE_MACHINE:
+        return {"status": "NOTHING_TO_HEAL", "jobId": job_id, "message": "The last verification passed."}
+    if not verification.get("commands"):
+        raise ToolError("This job has no verification evidence to feed back. Run run_verification_suite first.")
+
+    self_heal = job["selfHeal"]
+    budget = self_heal_budget(job)
+    attempts = int(self_heal.get("attempts", 0) or 0)
+    if attempts >= budget:
+        return {
+            "status": "BLOCKED",
+            "jobId": job_id,
+            "attempts": attempts,
+            "maxAttempts": budget,
+            "evidencePaths": [entry.get("stdoutPath", "") for entry in self_heal.get("history", [])]
+            + [verification.get("stdoutPath", "")],
+            "message": (
+                f"Already retried {attempts} time(s), which is the limit. Handing back to you with the "
+                "full evidence from every attempt rather than spending more."
+            ),
+        }
+
+    binding, status = resolve_role_or_status(profile_name, "architect")
+    if status is not None:
+        return status
+
+    failure_context = "\n\n".join(
+        [
+            "## The previous attempt failed verification",
+            f"Suite: {verification.get('suiteName')}  exitCode: {verification.get('exitCode')}",
+            "## Commands",
+            json.dumps(verification.get("commands", []), ensure_ascii=False),
+            "## Captured output (tail)",
+            read_log_tail(verification.get("stdoutPath", "")),
+            "## Test plan from the previous attempt",
+            json.dumps(job["implementation"].get("testPlan", []), ensure_ascii=False),
+        ]
+    )
+
+    brief = dict(job["contextBrief"])
+    brief["repoSummary"] = f"{brief.get('repoSummary', '')}\n\n{failure_context}"
+    source_paths = list(dict.fromkeys([*brief.get("impactedFiles", []), *brief.get("sourceRefs", [])]))
+    user_request = f"{job.get('title', '')}\n\nFix the failure described in the brief."
+
+    try:
+        # The error log is repo-controlled text leaving the machine. It goes
+        # through the same fail-closed mask as everything else (INV-06).
+        retry = architect.create_implementation(binding, repo_path, user_request, brief, source_paths)
+    except outbound.OutboundBlocked as exc:
+        return {"status": "OUTBOUND_BLOCKED", "jobId": job_id, "message": str(exc)}
+    except architect.ImplementationError as exc:
+        return {"status": "IMPLEMENTATION_REJECTED", "jobId": job_id, "message": str(exc)}
+
+    attempts += 1
+    cost = dict(job["cost"])
+    cost["calls"] = int(cost.get("calls", 0)) + 1
+    cost["tokensIn"] = int(cost.get("tokensIn", 0)) + int(retry.get("tokensIn", 0))
+    cost["tokensOut"] = int(cost.get("tokensOut", 0)) + int(retry.get("tokensOut", 0))
+
+    entry: dict[str, Any] = {
+        "at": now_iso(),
+        "attempt": attempts,
+        "targetBaseUrl": retry["targetBaseUrl"],
+        "targetModel": retry["targetModel"],
+        "rationale": retry["rationale"],
+        "previousExitCode": verification.get("exitCode"),
+        "previousStdoutPath": verification.get("stdoutPath", ""),
+    }
+
+    patch_path = ""
+    if retry["patch"].strip():
+        patch_path = str(save_patch_file(job_id, retry["patch"], suffix=f"-heal{attempts}"))
+        entry["patchPath"] = patch_path
+        applied = tool_apply_patch({"repoPath": str(repo_path), "patchPath": patch_path, "jobId": job_id})
+        entry["apply"] = {"status": applied["status"], "appliedAtRef": applied.get("appliedAtRef", "")}
+        if applied["status"] == "APPLIED":
+            # Never change the suite between attempts. Loosening the thing being
+            # measured is the most ordinary way a false green happens.
+            verified = tool_run_verification_suite(
+                {"repoPath": str(repo_path), "suiteName": suite_name, "jobId": job_id}
+            )
+            entry["verification"] = {
+                "status": verified.get("status"),
+                "exitCode": verified.get("verification", {}).get("exitCode"),
+                "stdoutPath": verified.get("verification", {}).get("stdoutPath", ""),
+            }
+    else:
+        entry["apply"] = {"status": "NO_PATCH", "appliedAtRef": ""}
+
+    history = [*self_heal.get("history", []), entry]
+    healed = entry.get("verification", {}).get("exitCode") == 0
+    saved = upsert_job(
+        {
+            "id": job_id,
+            "selfHeal": {"attempts": attempts, "maxAttempts": budget, "history": history},
+            "cost": cost,
+            "stage": "GATE",
+            "status": "RUNNING" if healed else ("BLOCKED" if attempts >= budget else "RUNNING"),
+        }
+    )
+
+    return {
+        "status": "HEALED" if healed else ("BLOCKED" if attempts >= budget else "RETRIED"),
+        "jobId": job_id,
+        "attempts": attempts,
+        "maxAttempts": budget,
+        "cost": cost,
+        "selfHeal": {"attempts": attempts, "maxAttempts": budget, "history": history},
+        "dispatch": {"targetBaseUrl": retry["targetBaseUrl"], "targetModel": retry["targetModel"]},
+        "job": job_with_defaults(saved),
+        "message": (
+            f"Attempt {attempts} of {budget} via {retry['targetModel']} at {retry['targetBaseUrl']}. "
+            + ("Verification passed." if healed else "Still failing; full evidence kept for every attempt.")
+        ),
+    }
+
+
 def schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
     return {"type": "object", "properties": properties, "required": required or [], "additionalProperties": False}
 
@@ -3518,6 +3680,24 @@ TOOLS = [
         ),
     },
     {
+        "name": "self_heal",
+        "title": "Retry After A Failed Verification",
+        "description": (
+            "Send the failing verification output back to the architect once, apply the returned patch, "
+            "and re-run the same suite. Hard-capped; never changes the suite between attempts. Every "
+            "attempt's token cost is recorded on the job."
+        ),
+        "inputSchema": schema(
+            {
+                "repoPath": {"type": "string"},
+                "jobId": {"type": "string"},
+                "suiteName": {"type": "string"},
+                "profile": {"type": "string"},
+            },
+            ["repoPath", "jobId"],
+        ),
+    },
+    {
         "name": "profile_describe",
         "title": "Describe Provider Profile",
         "description": (
@@ -3601,6 +3781,7 @@ HANDLERS = {
     "dispatch_context_brief": tool_dispatch_context_brief,
     "dispatch_architect": tool_dispatch_architect,
     "apply_patch": tool_apply_patch,
+    "self_heal": tool_self_heal,
     "profile_describe": tool_profile_describe,
     "profile_set_role": tool_profile_set_role,
     "profile_revert_last": tool_profile_revert_last,
