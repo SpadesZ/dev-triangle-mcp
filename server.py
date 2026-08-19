@@ -2209,6 +2209,10 @@ def tool_submit_antigravity_result(args: dict[str, Any]) -> dict[str, Any]:
                 "commandsRun": commands_run,
                 "findings": findings,
                 "followUps": follow_ups,
+                # Everything above is a string the agent typed. Labelling it is
+                # the whole point: this path stays useful for diagnosis, it just
+                # no longer carries the authority to declare success.
+                "evidenceLevel": EVIDENCE_AGENT_ASSERTED,
             },
         },
     )
@@ -2325,6 +2329,40 @@ def tool_job_get(args: dict[str, Any]) -> dict[str, Any]:
     raise ToolError(f"No job or handoff found with id {job_id}.")
 
 
+def evaluate_quality_gate(item: dict[str, Any], requested_status: str) -> tuple[str, str]:
+    """Decide the status an item is actually allowed to hold.
+
+    INV-03: SUCCESS is reserved for machine evidence. Everything an agent
+    asserts about itself tops out at NEEDS_REVIEW. The point is not distrust of
+    any particular agent; it is that the party that runs the tests must not also
+    be the party that writes down whether they passed.
+    """
+    if requested_status != "SUCCESS":
+        return requested_status, ""
+
+    verification = job_with_defaults(item)["verification"]
+    evidence_level = verification.get("evidenceLevel") or "none"
+    exit_code = verification.get("exitCode")
+    suite_name = verification.get("suiteName") or ""
+
+    if evidence_level != EVIDENCE_MACHINE:
+        return "NEEDS_REVIEW", (
+            f"SUCCESS requires machine evidence; this job has evidenceLevel={evidence_level!r}. "
+            "Run run_verification_suite against the repo to produce it."
+        )
+    if exit_code != 0:
+        return "NEEDS_REVIEW", (
+            f"SUCCESS requires exitCode 0; this job's verification exited {exit_code!r}."
+        )
+    if suite_name not in PRIMARY_SUITE_NAMES:
+        # VUL-04: a syntax-check suite passing is not the project passing.
+        return "NEEDS_REVIEW", (
+            f"SUCCESS requires evidence from a primary suite {list(PRIMARY_SUITE_NAMES)}; "
+            f"this evidence came from suite {suite_name!r}."
+        )
+    return "SUCCESS", ""
+
+
 def tool_job_update(args: dict[str, Any]) -> dict[str, Any]:
     job_id = require_string(args, "jobId", 200)
     status = optional_string(args, "status", 100)
@@ -2333,14 +2371,27 @@ def tool_job_update(args: dict[str, Any]) -> dict[str, Any]:
     for bucket in ("jobs", "handoffs"):
         for item in ledger.get(bucket, []):
             if item.get("id") == job_id:
+                gate_reason = ""
                 if status:
-                    item["status"] = status
+                    effective_status, gate_reason = evaluate_quality_gate(item, status)
+                    item["status"] = effective_status
+                    if gate_reason:
+                        item.setdefault("notes", [])
+                        item["notes"].append(
+                            {"at": now_iso(), "text": f"Quality gate downgraded SUCCESS: {gate_reason}"}
+                        )
                 if notes:
                     item.setdefault("notes", [])
                     item["notes"].append({"at": now_iso(), "text": notes})
                 item["updatedAt"] = now_iso()
                 save_ledger(ledger)
-                return {bucket[:-1]: item}
+                payload: dict[str, Any] = {bucket[:-1]: item}
+                if status:
+                    payload["requestedStatus"] = status
+                    payload["status"] = item["status"]
+                    if gate_reason:
+                        payload["qualityGate"] = {"downgraded": True, "reason": gate_reason}
+                return payload
     raise ToolError(f"No job or handoff found with id {job_id}.")
 
 

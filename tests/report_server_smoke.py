@@ -120,6 +120,12 @@ def main() -> int:
 
         updated = json.loads((TEST_STATE / "jobs.json").read_text(encoding="utf-8"))
         assert updated["handoffs"][0]["status"] == "COMPLETED"
+        # INV-03: whatever a worker submits here is an assertion, and the ledger
+        # has to say so. Without this label the audit trail cannot tell a claim
+        # apart from a measurement after the fact.
+        submitted = updated["handoffs"][0]["submittedResult"]
+        assert submitted["evidenceLevel"] == "agent_asserted"
+        assert "evidenceRef" in submitted
         print("Report server smoke test passed.")
         print(f"Tool count: {len(names)}")
         return 0

@@ -26,8 +26,13 @@ from typing import Any
 
 
 SERVER_NAME = "dev-triangle-report"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 PROTOCOL_VERSION = "2025-06-18"
+
+# Everything submitted through this server is a string a worker typed. It is
+# labelled as such so the quality gate in server.py can refuse to turn it into
+# SUCCESS. Workers may reference machine evidence by id; they cannot mint it.
+EVIDENCE_AGENT_ASSERTED = "agent_asserted"
 
 ROOT = Path(__file__).resolve().parent
 DEV_TRIANGLE_HOME = Path(
@@ -224,6 +229,9 @@ def tool_complete_dev_triangle_handoff(args: dict[str, Any]) -> dict[str, Any]:
     findings = optional_string_list(args, "findings")
     follow_ups = optional_string_list(args, "followUps")
     result_path_arg = optional_string(args, "resultPath", 2000)
+    # Additive and optional: a pointer to evidence produced by the main server's
+    # verification runner. An agent may cite evidence; it cannot create it.
+    evidence_ref = optional_string(args, "evidenceRef", 200)
 
     handoff = find_handoff_by_id_or_path(handoff_ref)
     result_path = resolve_result_path(result_path_arg, handoff)
@@ -265,6 +273,8 @@ def tool_complete_dev_triangle_handoff(args: dict[str, Any]) -> dict[str, Any]:
                 "commandsRun": commands_run,
                 "findings": findings,
                 "followUps": follow_ups,
+                "evidenceLevel": EVIDENCE_AGENT_ASSERTED,
+                "evidenceRef": evidence_ref or "",
             },
         },
     )
@@ -300,6 +310,13 @@ TOOLS = [
                 "findings": {"type": "array", "items": {"type": "string"}},
                 "followUps": {"type": "array", "items": {"type": "string"}},
                 "resultPath": {"type": "string"},
+                "evidenceRef": {
+                    "type": "string",
+                    "description": (
+                        "Optional id of machine evidence produced by run_verification_suite. "
+                        "Reporting a status here is an assertion, not proof; cite evidence instead."
+                    ),
+                },
             },
             "required": ["handoff", "summary"],
             "additionalProperties": False,
