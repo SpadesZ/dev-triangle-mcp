@@ -18,12 +18,13 @@ before and after install changes.
 # 主要責任:
 #   1. 檢查 toolRoot / stateRoot / 兩支伺服器檔案存在
 #   2. 探測 python 與 agy 版本
-#   3. codexConfigHasDevTriangle —— Codex 設定是否指向這一份 server.py
+#   3. orchestratorConfigured —— 至少一個 orchestrator 客戶端（Codex 或 Claude 各處設定）指向這一份 server.py
 #   4. geminiOnlyReportServer / ideOnlyReportServer —— worker 端只能看到 dev-triangle-report
 # 維護提醒:
+#   - 第 3 項不得改回只認 Codex。docs/ROLE_MODEL.md 宣稱 orchestrator 可換，寫死一家會讓「換掉 Codex」變成假紅燈，而那種矛盾沒有任何測試抓得到（與 W12 同一類問題）
 #   - 第 4 項是 INV-02 的量法，不得放寬成「包含 dev-triangle-report 就算過」。它同時要求「不含 dev-triangle」，少了後半段這條量尺就永遠是綠的
 #   - 本腳本必須維持唯讀。它會在安裝前後各跑一次，有副作用就無法比較
-#   - codexConfigHasDevTriangle 變紅最常見的原因不是設定壞掉，而是 Codex 指向另一份 checkout
+#   - orchestratorConfigured 變紅最常見的原因不是設定壞掉，而是客戶端指向另一份 checkout
 # 驗證方式:
 #   - .\scripts\doctor.ps1
 # ------------------------------------------------------------
@@ -91,6 +92,37 @@ $CodexConfig = Join-Path $HOME ".codex\config.toml"
 $GeminiConfig = Join-Path $HOME ".gemini\config\mcp_config.json"
 $IdeConfig = Join-Path $env:APPDATA "Antigravity IDE\User\mcp.json"
 
+# Any of these may be the orchestrator. The role model says the orchestrator is
+# replaceable, so this check asks "is at least one client pointed at this
+# checkout", not "is Codex pointed at it".
+$OrchestratorConfigs = [ordered]@{
+  codex          = $CodexConfig
+  claudeCode     = Join-Path $HOME ".claude.json"
+  claudeSettings = Join-Path $HOME ".claude\settings.json"
+  claudeDesktop  = Join-Path $env:APPDATA "Claude\claude_desktop_config.json"
+}
+
+function Get-OrchestratorsPointingHere {
+  param([string]$ServerPath, [System.Collections.Specialized.OrderedDictionary]$Configs)
+  $found = @()
+  foreach ($name in $Configs.Keys) {
+    $path = $Configs[$name]
+    if (-not (Test-Path -LiteralPath $path)) { continue }
+    try {
+      $content = Get-Content -Raw -LiteralPath $path -ErrorAction Stop
+    } catch {
+      continue
+    }
+    # Compare on the resolved server.py path. JSON escapes backslashes, so try
+    # both spellings rather than parsing four different config schemas.
+    $escaped = $ServerPath.Replace('\', '\\')
+    if ($content -match [regex]::Escape($ServerPath) -or $content -match [regex]::Escape($escaped)) {
+      $found += $name
+    }
+  }
+  return $found
+}
+
 $checks = [ordered]@{
   toolRoot = @{ ok = (Test-Path -LiteralPath $ToolRoot); value = $ToolRoot }
   stateRoot = @{ ok = (Test-Path -LiteralPath $StateRoot); value = $StateRoot }
@@ -98,9 +130,15 @@ $checks = [ordered]@{
   reportServer = @{ ok = (Test-Path -LiteralPath (Join-Path $ToolRoot "antigravity_report_server.py")); value = (Join-Path $ToolRoot "antigravity_report_server.py") }
   python = Run-Command -FilePath $Python -Arguments @("--version")
   agy = Run-Command -FilePath $Agy -Arguments @("--version")
-  codexConfigHasDevTriangle = @{ ok = ((Test-Path -LiteralPath $CodexConfig) -and ((Get-Content -Raw -LiteralPath $CodexConfig) -match [regex]::Escape((Join-Path $ToolRoot "server.py")))); value = $CodexConfig }
+  orchestratorConfigured = @{ ok = $false; value = "" }
   geminiConfig = Test-JsonConfig -Path $GeminiConfig
   antigravityIdeConfig = Test-JsonConfig -Path $IdeConfig
+}
+
+$orchestrators = Get-OrchestratorsPointingHere -ServerPath (Join-Path $ToolRoot "server.py") -Configs $OrchestratorConfigs
+$checks.orchestratorConfigured = @{
+  ok = ($orchestrators.Count -gt 0)
+  value = if ($orchestrators.Count -gt 0) { $orchestrators -join ", " } else { "none of: " + (($OrchestratorConfigs.Keys) -join ", ") }
 }
 
 $gemini = if (Test-Path -LiteralPath $GeminiConfig) { Get-Content -Raw -LiteralPath $GeminiConfig | ConvertFrom-Json } else { $null }

@@ -18,16 +18,19 @@ Human note:
 # 檔案路徑: dev-triangle-mcp/scripts/install-local.ps1
 # 產生時間: 2026-08-19 17:35 +08:00
 # 版本: v1.1
-# 功能說明: 把這一份 checkout 掛到本機的三個客戶端上。Codex 拿到完整控制面，Antigravity 與 Gemini 只拿到回報伺服器
+# 功能說明: 把這一份 checkout 掛到本機的客戶端上。Orchestrator（Codex 或 Claude）拿到完整控制面，Antigravity 與 Gemini 只拿到回報伺服器
 # 模組定位: 安裝器。它「是」設定的寫入者；它「不是」檔案複製器——它只把路徑指向 -ToolRoot，程式碼留在原地，所以換 checkout 只要重跑一次並指定新的 ToolRoot
 # 主要責任:
 #   1. 解析 python 與 agy 路徑(優先用 Codex 內建的 python)
-#   2. Backup-File 先備份三份設定
+#   2. Backup-File 先備份每一份要改的設定
 #   3. Set-CodexDevTriangleBlock 只替換 dev_triangle 區塊，保留使用者其他 MCP 伺服器
-#   4. Upsert-GeminiConfig / Upsert-IdeConfig 主動移除 worker 端的 dev-triangle 完整控制面
+#   4. Upsert-ClaudeDesktopConfig 為 Claude Desktop 寫入完整控制面（-Orchestrator claude|both 時）
+#   5. Upsert-GeminiConfig / Upsert-IdeConfig 主動移除 worker 端的 dev-triangle 完整控制面
 # 維護提醒:
 #   - 不得把 JULES_API_KEY 或任何金鑰值寫進設定檔。這裡只列環境變數「名稱」讓 Codex 繼承(INV-04)
-#   - 第 4 項的 Remove-JsonPropertyIfPresent 不得省略。舊版安裝可能把完整控制面掛到 worker 端，不主動移除就會一直留著(INV-02)
+#   - 第 5 項的 Remove-JsonPropertyIfPresent 不得省略。舊版安裝可能把完整控制面掛到 worker 端，不主動移除就會一直留著(INV-02)
+#   - 不得改寫 ~/.claude.json。那是 Claude Code 自己擁有並持續重寫的大檔（含專案歷史），而且它有支援的 CLI 指令可用——本腳本改為印出那道指令，不動檔案
+#   - 完整控制面只給 orchestrator。worker 端（Gemini CLI、Antigravity IDE）永遠只拿 dev-triangle-report，這條不因為換 orchestrator 而放寬
 #   - 本腳本不複製檔案。ToolRoot 指到哪裡，客戶端就載入哪裡的 server.py——換 checkout 時這是唯一要動的東西
 # 驗證方式:
 #   - .\scripts\install-local.ps1 -ToolRoot D:\dev-triangle-mcp
@@ -38,7 +41,9 @@ param(
   [string]$ToolRoot = (Split-Path -Parent (Split-Path -Parent $PSCommandPath)),
   [string]$StateRoot = (Join-Path $HOME ".dev-triangle"),
   [string]$PythonPath = "",
-  [string]$AgyPath = ""
+  [string]$AgyPath = "",
+  [ValidateSet("codex", "claude", "both")]
+  [string]$Orchestrator = "both"
 )
 
 $ErrorActionPreference = "Stop"
@@ -251,12 +256,57 @@ $reportServerForIde = [pscustomobject]@{
   }
 }
 
+$ClaudeDesktopConfig = Join-Path $env:APPDATA "Claude\claude_desktop_config.json"
+
+$devTriangleForClaude = [pscustomobject]@{
+  command = $PythonPath
+  args = @($ServerPath)
+  env = [pscustomobject]@{
+    DEV_TRIANGLE_HOME = $StateRoot
+    ANTIGRAVITY_HANDOFF_DIR = $HandoffRoot
+    ANTIGRAVITY_COMMAND = $AgyPath
+  }
+}
+
+function Upsert-ClaudeDesktopConfig {
+  # Claude Desktop uses the same mcpServers shape as the Gemini CLI config.
+  # Unlike the worker-side configs, this one gets the FULL control plane,
+  # because Claude here is acting as the orchestrator, not as a worker.
+  param([string]$Path, [object]$ServerConfig)
+  $json = Read-JsonObject -Path $Path -RootProperty "mcpServers"
+  if (-not ($json.PSObject.Properties.Name -contains "mcpServers") -or $null -eq $json.mcpServers) {
+    Set-JsonProperty -Object $json -Name "mcpServers" -Value ([pscustomobject]@{})
+  }
+  Set-JsonProperty -Object $json.mcpServers -Name "dev-triangle" -Value $ServerConfig
+  Write-JsonFile -Path $Path -Object $json
+}
+
 $backups = @()
-$backups += Backup-File -Path $CodexConfig
+$installedFor = @()
+$notes = @()
+
+if ($Orchestrator -in @("codex", "both")) {
+  $backups += Backup-File -Path $CodexConfig
+  Set-CodexDevTriangleBlock -ConfigPath $CodexConfig -Block $codexBlock
+  $installedFor += "codex"
+}
+
+if ($Orchestrator -in @("claude", "both")) {
+  $backups += Backup-File -Path $ClaudeDesktopConfig
+  Upsert-ClaudeDesktopConfig -Path $ClaudeDesktopConfig -ServerConfig $devTriangleForClaude
+  $installedFor += "claude-desktop"
+  # Claude Code keeps user-scope MCP servers in ~/.claude.json, a large file it
+  # owns and rewrites itself. Rewriting it from here risks clobbering project
+  # history for no good reason when a supported command exists - so print the
+  # command instead of editing the file.
+  $notes += "For Claude Code, run: claude mcp add dev-triangle --scope user -- `"$PythonPath`" `"$ServerPath`""
+}
+
+# Worker-side config is written regardless of who orchestrates: these two get
+# the report-only surface, and any full control plane left by an older install
+# is actively removed (INV-02).
 $backups += Backup-File -Path $GeminiConfig
 $backups += Backup-File -Path $IdeConfig
-
-Set-CodexDevTriangleBlock -ConfigPath $CodexConfig -Block $codexBlock
 Upsert-GeminiConfig -Path $GeminiConfig -ServerConfig $reportServerForGemini
 Upsert-IdeConfig -Path $IdeConfig -ServerConfig $reportServerForIde
 
@@ -265,10 +315,14 @@ $result = [pscustomobject]@{
   name = "Dev Triangle MCP"
   toolRoot = $ToolRoot
   stateRoot = $StateRoot
+  orchestrator = $Orchestrator
+  installedFor = $installedFor
   codexConfig = $CodexConfig
+  claudeDesktopConfig = $ClaudeDesktopConfig
   geminiConfig = $GeminiConfig
   antigravityIdeConfig = $IdeConfig
   backups = @($backups | Where-Object { $_ })
+  notes = $notes
   agy = if (Test-Path -LiteralPath $AgyPath) { $AgyPath } else { "not-found: $AgyPath" }
 }
 
