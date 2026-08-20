@@ -25,6 +25,11 @@ providers.example.json
   An all-empty provider profile template. Copy it to
   providers.<your-name>.json, fill it in, and select it with
   DEV_TRIANGLE_PROFILE. The file name is the profile name.
+
+gemini-broker-deny-all.toml
+  A policy for a Gemini CLI bound to contextBroker. Pass its absolute path in
+  the CLI args; it removes every tool from the Broker instead of relying on
+  approval mode alone.
 ```
 
 ## Provider Profiles
@@ -47,6 +52,9 @@ Two rules worth knowing before you edit:
 - **`apiKeyEnv` is a variable NAME, not a key.** Put the key in your shell
   environment and write the variable's name here. Values that look like
   credentials are rejected at load time.
+- **A CLI Broker must be unable to act.** For Gemini CLI, include
+  `--policy <absolute path to gemini-broker-deny-all.toml>`. A live probe showed
+  that plan mode alone can still write a file.
 
 Check what is currently bound:
 

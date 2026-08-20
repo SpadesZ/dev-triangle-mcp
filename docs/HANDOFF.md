@@ -14,17 +14,17 @@
 
 | 項目 | 值 |
 |---|---|
-| 分支 | `feat/sai-v0.6-upgrade`，**未推、未合併 `main`** |
+| 分支 | `feat/sai-v0.6-upgrade` 與 `main` 同步到 GitHub |
 | MCP 工具數 | **30**（施工前 19） |
-| 測試 | `python -m pytest -q tests` → **155 passed**，15 個 `test_*.py` |
-| 突變驗證 | **52 條全部紅→綠**，逐條記在各包的 commit message |
+| 測試 | `python -m pytest -q tests` → **162 passed**，15 個 `test_*.py` |
+| 突變驗證 | **54 條紅→綠**；另補 CLI timeout 診斷覆蓋 |
 | `providers/` | 10 個模組 |
 | `docs/NOTES.md` | 13 則，全部有同號完整條目與可執行驗證 |
-| 本機安裝 | Codex 已指向 `D:\dev-triangle-mcp`，`doctor.ps1` **pass**（11 項全綠） |
+| 本機安裝 | Active profile 為 `three-account`；`doctor.ps1` **pass**（11 項全綠） |
 
 ### 一句話狀態
 
-**「假綠燈」那條核心已經補起來並實跑驗證過；「彈性化」的機制做完了但只有 mock 證據。**
+**「假綠燈」核心、彈性化機制與三帳號真實閉環都已實跑；剩餘的是跨專案 user-scope 部署選項。**
 
 ---
 
@@ -87,12 +87,12 @@ run_verification_suite default suite → exitCode 0, evidenceLevel machine (13.7
 S4.1 machine_verified_rate = 1.000 (1/1)
 ```
 
-### 兩棒與 self-heal —— 只有 mock 證據
+### 兩棒與 self-heal —— 兩棒已有真實證據，self-heal 保持受限
 
 `W05` Context Broker、`W06` Architect ＋ `apply_patch`、`W07` self-heal、`W13` NL 設定橋接。
-⚠️ 自動測試仍全部替換掉傳輸層。2026-08-20 已對真實 `agy` CLI 派送，但回傳 patch
-沒有通過 Orchestrator review，尚未進到 apply／machine verification／`SUCCESS`，所以 `C6`
-仍然是紅燈。
+2026-08-20 已以 Gemini Broker 與 Claude Architect 跑過真實兩棒、Codex 人工閘門、
+primary machine verification、persisted `SUCCESS` 與 rollback drill。Self-heal 仍只允許驗證
+失敗後最多一次，不因這次成功而放寬。
 
 ### 彈性化（`W14`–`W18`，施工後追加）
 
@@ -113,21 +113,11 @@ S4.1 machine_verified_rate = 1.000 (1/1)
 
 ## 四、**沒有**做完的（誠實清單）
 
-### 1. `C6`「not only mocks」未達成 —— 最重要的一條
+### 1. `C6`「not only mocks」已完成；這裡保留歷史紅燈
 
-`docs/PROVIDERS.md` 的 profile 狀態表**刻意沒有改成 stable**（`INV-10`）。六條驗收裡五條綠、第六條紅，而那正是「not only mocks」要擋的四捨五入。
-
-**要補這條，最省的路徑**（不需要 API key）：
-
-```powershell
-# 1. 把 architect 綁到你已經有的 CLI
-#    編輯 config/providers.<name>.json 的 architect：
-#      "kind": "cli", "command": "claude", "promptArg": "-p", "promptVia": "stdin", "enabled": true
-# 2. 開一個 architect-only 的 job，直接指定要讀哪些檔
-#    然後 dispatch_architect → apply_patch → run_verification_suite
-```
-
-跑通一次就是這條路線第一次的真實證據。
+`agy` 階段確實只有傳輸證據，不能算閉環。其後兩個 persisted job 已補齊真實 Claude
+`architect-only` 與 Gemini → Claude 完整路線；下列舊失敗仍保留，因為它們解釋了為何
+不能拿「模型有回話」冒充「產品可用」。
 
 **2026-08-20 獨立驗收新增證據**：
 
@@ -141,7 +131,19 @@ S4.1 machine_verified_rate = 1.000 (1/1)
 - 安全驗收沒有使用 `--dangerously-skip-permissions`；`--sandbox` 加「不得呼叫工具」
   才能避免非互動執行要求讀取家目錄。
 
-結論仍是：**傳輸已實跑，產品閉環未通過**。不得把這批證據改寫成 `C6` 已完成。
+上述是 `agy` 階段的歷史證據，已被 2026-08-20 的正式 CLI 驗收取代：
+
+- `architect-only` job `dev-triangle-20260820061924-61510670`：真實 Claude Architect
+  產生 patch，Codex 審查後套用，`default` suite 落下 `machine`／exit 0，ledger 為
+  `SUCCESS`；隨後在 disposable fixture hard reset，內容與乾淨工作樹都回到原 commit。
+- 完整 job `dev-triangle-20260820062514-10202cf4`：Gemini Broker → Claude Architect →
+  Codex review → deterministic verifier → `SUCCESS`；`usage_summary` 分別記錄 Gemini 與
+  Claude 目的地，兩列都誠實標示 `tokensAvailable: false`。
+- 真實派送揭露並修正 Windows patch 換行缺陷：patch 現在固定以 LF 落檔，新增回歸測試。
+- Gemini 的 `--approval-mode plan` 單獨使用仍曾寫入測試檔；正式 Broker binding 必須搭配
+  `config/gemini-broker-deny-all.toml`。同一寫檔探針加 policy 後為 0 tool calls、0 檔案。
+
+因此 `C6` 已完成；歷史紅燈保留作為為什麼需要真實閉環的證據。
 
 ### 2. Claude 端已用 `.mcp.json` 掛上（`claude_desktop_config.json` 這條路是死的）
 
@@ -162,8 +164,8 @@ App 用自己的狀態重寫了整個檔。詳見 `NOTE-014`，那則 NOTE 存�
 
 **還沒做的是 user scope**（讓 dev_triangle 在**所有**專案都看得到，不只 `D:\dev-triangle-mcp`）：
 
-- `claude` CLI **不在本機 PATH 上**（`where.exe` 找不到，常見安裝位置都沒有），所以
-  `claude mcp add` 這條在這台機器上跑不了。
+- Claude CLI 已隔離安裝並完成 `claude.ai` 登入，但刻意沒有加入全域 PATH。要執行
+  `claude mcp add` 時請用該 CLI 的絕對路徑，不要假設另一個 shell 也找得到它。
 - `~/.claude.json` 目前**沒有 `mcpServers` 鍵**。要手動加的話**先關掉 Claude Code**——
   它會重寫那個檔（41.5 KB，含 `projects` 歷史與 `oauthAccount`），開著改會被吃掉，
   跟上面 desktop 的情況一模一樣。
@@ -196,9 +198,10 @@ claude mcp add dev-triangle --scope user `
 
 跑完後 `doctor.ps1` 的 `orchestratorConfigured` 應再多出 `claudeCode`。
 
-### 3. CI 只做過本機模擬
+### 3. CI 已接上 GitHub
 
-`.github/workflows/ci.yml` 已加入 pytest 步驟，並用本機模擬證明「刪掉那一步，一個被拆掉的 `INV-03` 檢查可以完整通過 CI」。**但分支沒推，沒有真實的 GitHub Actions 紅綠紀錄。**
+`.github/workflows/ci.yml` 會跑 pytest；`main` 與 `feat/sai-v0.6-upgrade` 的上一個推送版本
+都已有成功的 GitHub Actions 紀錄。本次閉環修正仍須在推送後確認同一 workflow 維持綠燈。
 
 ### 4. `scripts\demo-user-flow.ps1` 未實跑（需本機已認證的 agy）
 
@@ -217,7 +220,7 @@ claude mcp add dev-triangle --scope user `
 
 ---
 
-## 四之一、下一步：兩件待辦（可直接照做）
+## 四之一、下一步：一件部署待辦與一項已完成驗收
 
 ### 待辦 A — 讓 dev_triangle 在**所有**專案都看得到（user scope）
 
@@ -259,68 +262,24 @@ claude mcp add dev-triangle --scope user `
 6. ⚠️ **隔幾小時再跑一次第 5 步。** `NOTE-014` 的教訓是「安裝當下綠不算數」——
    要跨過一次 App 重寫才算真的留得住。
 
-### 待辦 B — 補上 `C6`「not only mocks」（唯一沒達成的驗收條件）
+### 待辦 B — `C6`「not only mocks」已完成
 
-**在 `D:\dev-triangle-mcp` 開 Claude Code**（工具已掛好）執行。目標：讓
-Broker→Architect 那條路線第一次真的送出請求，而不是被 monkeypatch 換掉。
+完成證據是上面的兩個 persisted job。正式順序固定為：
 
-**先確認機器上有什麼**（2026-08-19 實測）：
+```text
+Codex Orchestrator
+→ Gemini Broker（deny-all policy）
+→ Codex 審查 brief/sourceRefs
+→ Claude Architect（plan + 禁止寫入工具）
+→ Codex 審查 patch
+→ apply_patch
+→ default deterministic suite
+→ SUCCESS
+→ disposable fixture rollback drill
+```
 
-| CLI | 路徑 | 備註 |
-|---|---|---|
-| `agy` | `C:\Users\Franky Kuo\AppData\Local\agy\bin\agy.exe` | 在 PATH 上，v1.0.13 |
-| `codex` | `C:\Users\Franky Kuo\AppData\Local\OpenAI\Codex\bin\39633208fb6e0c47\codex.exe` | ⚠️ 路徑含版本 hash，Codex 更新後會失效 |
-| `claude` / `gemini` | **沒有** | CLI 未安裝，只有 IDE／App |
-
-**步驟**：
-
-1. **先手動探一次那支 CLI 怎麼吃 prompt**，不要直接寫進 profile 用猜的：
-   ```powershell
-   $codex = "C:\Users\Franky Kuo\AppData\Local\OpenAI\Codex\bin\39633208fb6e0c47\codex.exe"
-   & $codex --help | Select-Object -First 30
-   # 目標：確認非互動模式的子指令，以及 prompt 走 argv 還是 stdin
-   ```
-   結果決定 profile 的 `args`／`promptArg`／`promptVia` 怎麼填（`NOTE-009`：**逐字照抄，
-   不替它猜旗標**；`NOTE-013`：能走 stdin 就走 stdin）。
-
-2. 複製一份 profile 並把 `architect` 綁上去：
-   ```powershell
-   Copy-Item config\providers.example.json config\providers.codex-architect.json
-   # 編輯 architect：kind="cli"、command=<上面那支的完整路徑>、
-   #                args/promptArg/promptVia 依步驟 1 的結果、enabled=true
-   ```
-
-3. 切換並確認綁定：`profile_activate` → `profile_describe`
-
-4. 跑一次真實閉環（`architect-only` 路線，跳過情報層以縮小變因）：
-   ```
-   start_job(repoPath="D:\dev-triangle-mcp", userRequest="<一個小改動>",
-             route="architect-only", sourcePaths=["<一兩個檔>"])
-   → dispatch_architect(repoPath=..., jobId=..., shadow=false)
-   → apply_patch(repoPath=..., jobId=...)
-   → run_verification_suite(repoPath=..., suiteName="quick", confirmSuite=true, jobId=...)
-   → job_update(jobId=..., status="SUCCESS")
-   ```
-   外送白名單已含 `<self>`，所以 `D:\dev-triangle-mcp` 本來就允許。
-
-5. **算數的證據**是：`dispatch.targetBaseUrl` 指向那支真的執行檔、job 的
-   `implementation.patchPaths` 有東西、`verification.evidenceLevel == "machine"`、
-   最後 `job_update` 真的落成 `SUCCESS`。
-
-6. 成功後要改的三個地方（**缺一就不算做完**）：
-   - `docs/PROVIDERS.md` 的 `C6` 那一列由 ❌ 改為 ✅ 並附證據
-   - 本檔第四節第 1 項移出「沒做完」清單
-   - `docs/SAI.md` `I2` 的施工輪實跑紀錄補一行
-
-**已知會卡的地方**：
-
-- CLI 印出橫幅／ANSI 色碼會讓 JSON 解析失敗。`dispatch.send_expecting_json` 會**重問
-  一次**「只回 JSON」，第二次還是失敗就報錯——那時要調的是 prompt 或 CLI 旗標，
-  **不是把重問次數加上去**（`NOTE-011` 的維護邊界）。
-- 那支 CLI 若需要互動確認就會卡住不回。`cli_agent` 對「exit 0 但沒有輸出」會明確
-  報錯而不是當成空答案，看到 `printed nothing` 就是這個情形。
-- `codex.exe` 的路徑含版本 hash，更新後 profile 會壞。**`command` 不能經 NL 修**
-  （`NOTE-012`），要改就編輯檔案。
+CLI profile 仍需逐字保存已驗證的參數；不得自動 failover，也不得省略 Gemini 的
+deny-all policy。CLI 更新後，先重跑短 prompt、stdin、40 KB、JSON 與寫檔探針，再視為可用。
 
 ## 五、接手時最容易踩的坑
 

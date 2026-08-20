@@ -53,6 +53,7 @@ This is the profile local productization is built around.
 | `claude-jules-antigravity` | Design example | Needs orchestrator config docs and validation |
 | `codex-gemini-antigravity` | Design example | Needs Gemini worker adapter |
 | `claude-gemini-antigravity` | Design example | Needs both orchestrator docs and worker adapter |
+| User-defined Codex + Gemini Broker + Claude Architect | Validated local binding | Machine-local CLI paths stay in the user's profile; the reusable deny-all Broker policy is committed |
 
 The project should not advertise a profile as stable until it has:
 
@@ -65,9 +66,9 @@ The project should not advertise a profile as stable until it has:
 
 ### Where The Broker → Architect Route Actually Stands
 
-The role-binding mechanism landed in the 2026-08-19 upgrade. The route itself is
-**not** validated, and this table is deliberately not being changed to say
-otherwise. Checked against the six conditions above:
+The role-binding mechanism landed in the 2026-08-19 upgrade. On 2026-08-20 the
+route also passed the real, non-mocked acceptance path. Checked against the six
+conditions above:
 
 | # | Condition | Status | Evidence |
 | --- | --- | --- | --- |
@@ -76,13 +77,13 @@ otherwise. Checked against the six conditions above:
 | 3 | Task creation / handoff | ✅ | `dispatch_context_brief`, `dispatch_architect`, `apply_patch` |
 | 4 | Result collection | ✅ | `job.contextBrief` and `job.implementation` in the ledger |
 | 5 | Protocol smoke tests | ✅ | `tests/test_context_broker.py`, `tests/test_apply_patch.py`, in CI |
-| 6 | **A real path, not only mocks** | ❌ **Not met** | Real `agy` dispatches ran on 2026-08-20, but no returned patch passed review and reached apply + machine verification + `SUCCESS` |
+| 6 | **A real path, not only mocks** | ✅ | Job `dev-triangle-20260820062514-10202cf4`: Gemini Broker → Claude Architect → reviewed patch → apply → primary machine verification (exit 0) → persisted `SUCCESS`; rollback drill restored the disposable fixture cleanly |
 
-**Condition 6 is the whole point of the list.** Five green boxes and a mocked
-sixth is precisely the state the "not only mocks" wording exists to stop anyone
-from rounding up. Until someone configures a real model and endpoint and runs the
-route end to end, the honest description of Broker → Architect is
-"mechanism complete, route not yet accepted".
+**Condition 6 is the whole point of the list.** The accepted binding used Gemini
+as a deny-all Context Broker and Claude as a non-writing Architect. Codex reviewed
+both boundaries, while the target repo's `default` suite—not either model—made
+the final decision. `usage_summary` persisted the two CLI destinations separately
+and marked token totals unavailable rather than inventing zeros.
 
 The parts that *are* validated against real execution are the verification runner
 and the quality gate: on 2026-08-19 the `default` suite ran three real commands

@@ -3314,7 +3314,7 @@ def save_patch_file(job_id: str, patch_text: str, suffix: str = "") -> Path:
     ensure_dirs()
     name = sanitize_filename(f"{job_id}{suffix}", "patch")
     path = PATCH_DIR / f"{name}.patch"
-    path.write_text(patch_text, encoding="utf-8")
+    path.write_text(patch_text, encoding="utf-8", newline="\n")
     return path
 
 

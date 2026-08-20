@@ -395,6 +395,33 @@ installed, point a role at it:
 }
 ```
 
+For Gemini as a Context Broker, use stdin and load the committed deny-all
+policy. `--approval-mode plan` is not sufficient by itself: a live write probe
+created a file in plan mode, while the same probe with this policy exposed zero
+tools and created nothing.
+
+```json
+"contextBroker": {
+  "displayName": "Gemini Broker",
+  "kind": "cli",
+  "command": "gemini",
+  "args": [
+    "--skip-trust",
+    "--approval-mode", "plan",
+    "--policy", "<absolute path to config/gemini-broker-deny-all.toml>",
+    "--prompt="
+  ],
+  "promptArg": "",
+  "promptVia": "stdin",
+  "enabled": true
+}
+```
+
+The empty `--prompt=` value is intentional. The Gemini CLI requires a prompt
+option to enter headless mode, but `-p` without a following value rejects stdin.
+Keep the policy path absolute because the CLI runs with the target repository as
+its working directory.
+
 `args` is passed through verbatim — if that CLI wants a model flag, put it there.
 This project deliberately does not know which flag each CLI uses, because those
 CLIs change and this repository would not hear about it.

@@ -10,6 +10,7 @@
 #   2. test_cli_usage_is_empty_not_zero —— 守 NOTE-010
 #   3. test_dispatch_does_not_fall_back —— 守 NOTE-011
 #   4. test_command_is_never_nl_writable —— 守 NOTE-012，本檔最重要的一支
+#   5. test_timeout_is_reported —— 真實子行程逾時必須成為可診斷錯誤
 # 維護提醒:
 #   - 第 4 支不得放寬。它擋的是「注入式設定變更」從『改端點』升級成『跑任意程式』，那是跨越 INV-01 的那條線
 #   - 假 CLI 要用真的子行程跑，不得 monkeypatch 掉 run_native。指令列組得對不對正是被測的東西
@@ -202,6 +203,15 @@ def test_nonzero_exit_is_reported(tmp_path: Path) -> None:
     with pytest.raises(cli_agent.CliAgentError) as excinfo:
         cli_agent.run_agent(cli_binding(str(fake)), system="", user="hi")
     assert "exited 3" in str(excinfo.value)
+
+
+def test_timeout_is_reported(tmp_path: Path) -> None:
+    fake = make_fake_cli(tmp_path, "import time; time.sleep(5); print('too late')\n", name="slow-agent")
+
+    with pytest.raises(cli_agent.CliAgentError) as excinfo:
+        cli_agent.run_agent(cli_binding(str(fake)), system="", user="hi", timeout=1)
+
+    assert "timed out after 1s" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

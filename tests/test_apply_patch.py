@@ -10,6 +10,7 @@
 #   2. test_records_pre_apply_ref —— 沒有 ref 就沒有回退點
 #   3. test_architect_must_include_target_destination —— 守 INV-15(c)
 #   4. test_architect_never_writes_the_working_tree —— 守 A1.3 的硬約束
+#   5. test_saved_patch_keeps_lf_newlines —— Windows 不得把 unified diff 改寫成 CRLF
 # 維護提醒:
 #   - dirty 檢查不得改成「只警告」。它擋的是使用者未提交的改動，那是本專案唯一不可能自己還原的東西
 #   - 這裡要用真的 git repo，不得用假的 status 字串。git 的輸出格式就是被測的一部分
@@ -145,6 +146,12 @@ def test_architect_never_writes_the_working_tree(architect_env: Path, monkeypatc
     assert result["implementation"]["patchPaths"], "the patch has to land somewhere"
     assert (repo / "src" / "main.py").read_text(encoding="utf-8") == "print('hi')\n"
     assert server.git_status_porcelain(repo).strip() == ""
+
+
+def test_saved_patch_keeps_lf_newlines() -> None:
+    path = server.save_patch_file("newline-regression", "--- a/file.txt\n+++ b/file.txt\n")
+
+    assert b"\r\n" not in path.read_bytes()
 
 
 def test_architect_must_include_target_destination(architect_env: Path, monkeypatch) -> None:

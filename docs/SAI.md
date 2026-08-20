@@ -119,7 +119,7 @@
 
 **施工輪新增 `NOTE-001`～`NOTE-008`**，每則都有同號完整條目與可執行的驗證指令，由 `tests/test_repo_integrity.py` 機械檢查「禁止失效引用」。
 
-⚠️ **`C6` 尚未達成，且本輪不得宣稱達成**：`W05`／`W06` 的所有測試都替換掉傳輸層，**從未對真實端點送出過任何請求**。`docs/PROVIDERS.md` 的 profile 狀態表因此維持原狀（`INV-10`）。
+✅ **`C6` 後續已達成**：2026-08-20 以真實 Gemini Broker 與 Claude Architect 跑完 Context Brief → reviewed patch → apply → primary machine verification（exit 0）→ persisted `SUCCESS` → disposable rollback drill。這不推翻原本「mock 不算 C6」的裁決，反而是第一次滿足它；證據見 `docs/HANDOFF.md`。
 
 ---
 
@@ -1271,7 +1271,7 @@ W00 方案裁決書（gate #1 已核准，剩 #2–#7；不擋任何人）
 
 **`S4.8` = 0、`S4.9` = 0**（依 `NOTE-001`／`NOTE-008` 的機械判準，由 `tests/test_repo_integrity.py` 執行）。
 
-⚠️ **仍未通過**：`.\scripts\demo-user-flow.ps1` 尚未實跑。2026-08-20 已對真實 `agy` CLI 執行 `W06` `architect-only` 派送，但非空 patch 未通過 Orchestrator review，沒有進到 apply／machine verification／`SUCCESS`；大來源另受 Windows argv 上限限制。因此 `C6` 仍為紅燈，詳見 `docs/HANDOFF.md`。
+✅ **`C6` 已通過**：2026-08-20 先以真實 Claude CLI 完成 `architect-only` 的 patch → Codex review → apply → `default` machine verification（exit 0）→ persisted `SUCCESS` → disposable fixture rollback；再以 Gemini Broker → Claude Architect 完成三帳號閉環（job `dev-triangle-20260820062514-10202cf4`）。`usage_summary` 分開記錄兩個 CLI 目的地且不虛構 token 數。真實執行同時抓出 Windows patch CRLF 缺陷並補上 LF 回歸測試；詳見 `docs/HANDOFF.md`。
 
 | W | 指令（repo 根執行） | 狀態 |
 |---|---|---|

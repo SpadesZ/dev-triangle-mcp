@@ -10,6 +10,7 @@
 #   2. test_header_verification_targets_exist —— 驗證方式指到的檔案必須存在
 #   3. test_every_note_reference_resolves —— NOTE(NOTE-NNN) 必須在 docs/NOTES.md 找得到同號條目
 #   4. test_provider_lock_hits_is_zero / test_silent_default_count_is_zero —— S4.8 與 S4.9 兩把量尺
+#   5. test_gemini_broker_policy_denies_every_tool —— Broker 的 CLI policy 必須維持全工具拒絕
 # 維護提醒:
 #   - 新增檔案時要嘛補檔頭，要嘛把它加進 EXEMPT_FILES 並在此寫明理由。不得為了讓測試過就放寬欄名檢查
 #   - S4.8 的例外判準只認「同一行提到拒絕清單」，見 docs/NOTES.md NOTE-001。不得改成整個檔案排除——整檔排除就是把量尺關掉
@@ -217,6 +218,14 @@ def test_silent_default_count_is_zero(repo_root: Path) -> None:
             if is_silent_default(stripped):
                 hits.append(f"{rel}:{number}: {stripped[:110]}")
     assert hits == [], "silent model/endpoint defaults (INV-12):\n" + "\n".join(hits)
+
+
+def test_gemini_broker_policy_denies_every_tool(repo_root: Path) -> None:
+    text = (repo_root / "config" / "gemini-broker-deny-all.toml").read_text(encoding="utf-8")
+
+    assert 'toolName = "*"' in text
+    assert 'decision = "deny"' in text
+    assert "interactive = false" in text
 
 
 def test_silent_default_detector_actually_detects() -> None:

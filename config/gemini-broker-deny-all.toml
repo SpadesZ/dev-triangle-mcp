@@ -1,0 +1,8 @@
+# Gemini Broker receives repo context in its prompt and must never act on the
+# working tree. Pass this file with `gemini --policy <absolute-path>`.
+[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 999
+interactive = false
+denyMessage = "Broker role is read-only and cannot invoke tools."
