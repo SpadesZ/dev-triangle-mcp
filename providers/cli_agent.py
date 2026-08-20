@@ -9,6 +9,7 @@
 #   1. build_command(binding, prompt) —— 逐字組出 [command, *args, promptArg]，prompt 只在 promptVia 為 arg 時才進指令列
 #   2. run_agent(binding, system, user, timeout) —— 執行並回傳與 providers/http.chat 相同形狀的結果
 #   3. resolve_executable(binding) —— 用 shutil.which 解析，找不到就明講找不到哪一支
+#   4. Windows argv 超過 CreateProcess 上限時先拒絕，避免把長度錯誤誤報成找不到執行檔
 # 維護提醒:
 #   - 不得為任何廠商內建旗標。args 是使用者逐字給的清單，本檔照抄不加工；一旦開始猜「claude 要用 --model、codex 要用 -m」，下一次那些 CLI 改版就會壞在這裡而沒人知道
 #   - 預設用 stdin 送 prompt，不得改成預設走命令列引數，見 docs/NOTES.md NOTE-013
@@ -21,7 +22,9 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +32,8 @@ from providers.profiles import RoleBinding
 
 
 DEFAULT_TIMEOUT_SEC = 900
+IS_WINDOWS = os.name == "nt"
+WINDOWS_COMMAND_LINE_LIMIT = 32767
 
 
 class CliAgentError(Exception):
@@ -68,6 +73,14 @@ def build_command(binding: RoleBinding, prompt: str | None = None) -> list[str]:
         line.append(binding.prompt_arg)
     if binding.prompt_via == "arg" and prompt is not None:
         line.append(prompt)
+    command_line_length = len(subprocess.list2cmdline(line))
+    if IS_WINDOWS and command_line_length >= WINDOWS_COMMAND_LINE_LIMIT:
+        raise CliAgentError(
+            f"Role {binding.slot!r} cannot pass this prompt as an argument: the Windows command line "
+            f"would be {command_line_length} characters (limit "
+            f"{WINDOWS_COMMAND_LINE_LIMIT - 1}). Set promptVia to 'stdin' if this CLI supports it, "
+            "or reduce the source input."
+        )
     return line
 
 

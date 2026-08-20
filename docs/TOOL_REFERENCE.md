@@ -335,6 +335,47 @@ Updates one local job or handoff status and appends notes.
 
 Use this for manual bookkeeping when a human decision changes the status.
 
+### `usage_summary`
+
+Rolls dispatches up by profile, role, kind, destination, and model. Optional
+`profile` and `sinceDays` inputs narrow the report.
+
+Calls and tokens stay separate. CLI-backed rows have
+`tokensAvailable: false`, and `unmeasuredRows` identifies the exact profile and
+executable whose token count is unavailable; those calls still spend a
+subscription.
+
+### `profile_describe`
+
+Shows the active or named profile, every role binding, unconfigured roles,
+unverified model ids, shared models, and recent configuration changes. This
+tool is read-only.
+
+### `profile_activate`
+
+Switches the whole active profile and persists the selected name in the
+generated `config/active-profile.json`. The return reports before and after,
+the effective source, each binding, and any unconfigured roles.
+
+Activation never chooses a fallback profile automatically. The user selects
+the replacement and can say "undo that" to return to the previous profile.
+
+### `profile_set_role`
+
+Changes one existing role binding, permanently by default or for one job when
+`scope: thisJob` is used. Every change reports before and after and is appended
+to `configChanges` with the relayed user utterance.
+
+Only data fields are conversationally writable. Executable `command`, `args`,
+`promptArg`, and `kind` remain file-only. `apiKeyEnv` accepts an environment
+variable name, never a credential value.
+
+### `profile_revert_last`
+
+Reverses one or more recent profile or active-profile changes and records the
+revert as another ledger entry. It refuses to undo an activation to "no
+profile", because that would leave every role unreachable.
+
 ## Report Server: `dev-triangle-report`
 
 File:

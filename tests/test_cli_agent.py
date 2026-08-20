@@ -101,6 +101,20 @@ def test_prompt_via_arg_puts_it_on_the_command_line(tmp_path: Path) -> None:
     assert cli_agent.build_command(binding, "THE PROMPT")[1:] == ["-p", "THE PROMPT"]
 
 
+def test_oversized_windows_argument_names_the_real_failure(tmp_path: Path, monkeypatch) -> None:
+    fake = make_fake_cli(tmp_path, ECHO_BOTH)
+    binding = cli_binding(str(fake), prompt_arg="--print", prompt_via="arg")
+    monkeypatch.setattr(cli_agent, "IS_WINDOWS", True)
+
+    with pytest.raises(cli_agent.CliAgentError) as excinfo:
+        cli_agent.build_command(binding, "x" * cli_agent.WINDOWS_COMMAND_LINE_LIMIT)
+
+    message = str(excinfo.value)
+    assert "Windows command line" in message
+    assert "promptVia to 'stdin'" in message
+    assert "not on PATH" not in message
+
+
 def test_real_cli_receives_the_expected_argv(tmp_path: Path) -> None:
     fake = make_fake_cli(tmp_path, ECHO_BOTH)
     binding = cli_binding(str(fake), args=("--flag",), prompt_arg="-p")

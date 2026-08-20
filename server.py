@@ -2386,7 +2386,7 @@ def tool_usage_summary(args: dict[str, Any]) -> dict[str, Any]:
     since_days = optional_int(args, "sinceDays", 30, 1, 3650)
     cutoff = time.time() - since_days * 86400
 
-    groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+    groups: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     jobs_counted = 0
     for stored in load_ledger().get("jobs", []):
         job = job_with_defaults(stored)
@@ -2395,7 +2395,8 @@ def tool_usage_summary(args: dict[str, Any]) -> dict[str, Any]:
         dispatches = job.get("dispatches") or []
         if not dispatches:
             continue
-        jobs_counted += 1
+        profile_name = str(job.get("profile") or "")
+        counted_this_job = False
         for record in dispatches:
             try:
                 at = datetime.fromisoformat(str(record.get("at", ""))).timestamp()
@@ -2403,13 +2404,25 @@ def tool_usage_summary(args: dict[str, Any]) -> dict[str, Any]:
                 at = cutoff
             if at < cutoff:
                 continue
-            key = (record.get("slot", ""), record.get("kind", ""), record.get("targetModel", ""))
+            if not counted_this_job:
+                jobs_counted += 1
+                counted_this_job = True
+            key = (
+                profile_name,
+                record.get("slot", ""),
+                record.get("kind", ""),
+                record.get("targetBaseUrl", ""),
+                record.get("targetModel", ""),
+            )
             row = groups.setdefault(
                 key,
                 {
-                    "slot": key[0],
-                    "kind": key[1],
-                    "targetModel": key[2],
+                    "profile": key[0],
+                    "slot": key[1],
+                    "kind": key[2],
+                    "displayName": record.get("displayName", ""),
+                    "targetBaseUrl": key[3],
+                    "targetModel": key[4],
                     "calls": 0,
                     "callsWithTokens": 0,
                     "tokensIn": 0,
@@ -2429,6 +2442,10 @@ def tool_usage_summary(args: dict[str, Any]) -> dict[str, Any]:
 
     rows = sorted(groups.values(), key=lambda item: item["calls"], reverse=True)
     unmeasured = [row for row in rows if not row["tokensAvailable"]]
+    unmeasured_labels = [
+        f"{row['profile'] + ':' if row['profile'] else ''}{row['slot']}@{row['targetBaseUrl']}"
+        for row in unmeasured
+    ]
     return {
         "sinceDays": since_days,
         "profile": profile_filter or "(all)",
@@ -2438,13 +2455,23 @@ def tool_usage_summary(args: dict[str, Any]) -> dict[str, Any]:
         "totalTokensIn": sum(row["tokensIn"] for row in rows),
         "totalTokensOut": sum(row["tokensOut"] for row in rows),
         "rowsWithoutTokenData": [row["slot"] for row in unmeasured],
+        "unmeasuredRows": [
+            {
+                "profile": row["profile"],
+                "slot": row["slot"],
+                "kind": row["kind"],
+                "targetBaseUrl": row["targetBaseUrl"],
+                "targetModel": row["targetModel"],
+            }
+            for row in unmeasured
+        ],
         "message": (
             f"{sum(row['calls'] for row in rows)} dispatch(es) across {jobs_counted} job(s) in the last "
             f"{since_days} day(s)."
             + (
                 f" Token totals exclude {sum(row['calls'] - row['callsWithTokens'] for row in unmeasured)} "
-                f"call(s) on {[row['slot'] for row in unmeasured]}, which run through a CLI and do not "
-                "report token counts. Those calls are not free - they spend a subscription."
+                f"call(s) on {unmeasured_labels}, which do not report complete token counts. "
+                "Those calls are not free - CLI calls still spend a subscription."
                 if unmeasured
                 else ""
             )
@@ -4047,10 +4074,11 @@ TOOLS = [
         "name": "usage_summary",
         "title": "Usage By Role",
         "description": (
-            "Roll up dispatches by role, kind and model so you can see which vendor is carrying the "
-            "load. Calls and tokens are separate columns: CLI-backed roles spend a subscription "
+            "Roll up dispatches by profile, role, kind, destination and model so you can see which "
+            "vendor is carrying the load without merging different CLI accounts. Calls and tokens "
+            "are separate columns: CLI-backed roles spend a subscription "
             "without reporting token counts, so their rows are marked tokensAvailable false rather "
-            "than showing zero. Read rowsWithoutTokenData back to the user - a zero would look free."
+            "than showing zero. Read unmeasuredRows back to the user - a zero would look free."
         ),
         "inputSchema": schema(
             {

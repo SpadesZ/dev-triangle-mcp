@@ -57,6 +57,12 @@ python -c "from providers.profiles import load_profile; print(load_profile('exam
 
 or call the `mcp_health_check` tool and read its `profile` block.
 
+`profile_activate` writes the selected name to the generated,
+machine-local `config/active-profile.json`. That file is checked on every
+profile resolution and wins over `DEV_TRIANGLE_PROFILE`, so a long-running MCP
+server can switch immediately without a restart. Use the tool to change it;
+do not hand-edit or commit the generated file.
+
 ## The Important Split
 
 Codex should see:

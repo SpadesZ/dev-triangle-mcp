@@ -10,6 +10,8 @@
 #   2. test_zero_is_never_used_to_mean_unmeasured —— 反向分支，防止用 0 冒充
 #   3. test_one_unmeasured_call_taints_the_whole_row —— 混合來源時整列算不完整
 #   4. test_api_rows_keep_real_token_totals —— API 列照常有數字，避免整支測試被「一律標不可用」矇混
+#   5. test_cli_accounts_are_not_merged —— 守不同 profile／執行檔不會因空 model 被合併
+#   6. test_jobs_counted_respects_since_days —— job 計數與 dispatch 時間窗使用同一個口徑
 # 維護提醒:
 #   - 不得為了讓報表好看而把 CLI 列的 token 填 0。那會讓最便宜的那一列剛好是沒人看得到成本的那一列
 #   - 不得在此檔引入任何價目表或金額換算。本專案不知道使用者的方案與費率
@@ -44,9 +46,9 @@ def api_payload(tokens_in: int = 100, tokens_out: int = 20) -> dict[str, Any]:
     }
 
 
-def cli_payload() -> dict[str, Any]:
+def cli_payload(target_base_url: str = "C:/tools/claude.cmd") -> dict[str, Any]:
     return {
-        "targetBaseUrl": "C:/tools/claude.cmd",
+        "targetBaseUrl": target_base_url,
         "targetModel": "",
         "tokensIn": 0,
         "tokensOut": 0,
@@ -63,8 +65,10 @@ def clean_ledger():
         server.LEDGER_PATH.unlink()
 
 
-def job_with_dispatches(*records: tuple[FakeBinding, dict[str, Any]]) -> str:
-    job = server.upsert_job(server.new_job_skeleton(provider="dev-triangle", route="broker-architect"))
+def job_with_dispatches(*records: tuple[FakeBinding, dict[str, Any]], profile: str = "") -> str:
+    job = server.upsert_job(
+        server.new_job_skeleton(provider="dev-triangle", route="broker-architect", profile=profile)
+    )
     for binding, payload in records:
         merged = server.merge_dispatch(job, server.dispatch_record(binding, payload))
         job = server.upsert_job({"id": job["id"], **merged})
@@ -160,6 +164,31 @@ def test_rows_are_grouped_by_slot_kind_and_model(clean_ledger) -> None:
     assert slots == [("architect", "api"), ("architect", "cli")]
 
 
+def test_cli_accounts_are_not_merged(clean_ledger) -> None:
+    job_with_dispatches(
+        (FakeBinding("architect", "cli", "Claude CLI"), cli_payload("C:/tools/claude.exe")),
+        profile="claude-heavy",
+    )
+    job_with_dispatches(
+        (FakeBinding("architect", "cli", "Gemini CLI"), cli_payload("C:/tools/gemini.cmd")),
+        profile="gemini-heavy",
+    )
+
+    summary = server.tool_usage_summary({})
+
+    assert len(summary["byRole"]) == 2
+    assert {row["profile"] for row in summary["byRole"]} == {"claude-heavy", "gemini-heavy"}
+    assert {row["targetBaseUrl"] for row in summary["byRole"]} == {
+        "C:/tools/claude.exe",
+        "C:/tools/gemini.cmd",
+    }
+    assert {row["displayName"] for row in summary["byRole"]} == {"Claude CLI", "Gemini CLI"}
+    assert {row["profile"] for row in summary["unmeasuredRows"]} == {
+        "claude-heavy",
+        "gemini-heavy",
+    }
+
+
 def test_profile_filter_narrows_the_rollup(clean_ledger) -> None:
     job = server.upsert_job(
         server.new_job_skeleton(provider="dev-triangle", route="local", profile="cheap")
@@ -175,4 +204,19 @@ def test_jobs_without_dispatches_are_not_counted(clean_ledger) -> None:
     server.upsert_job(server.new_job_skeleton(provider="dev-triangle", route="local"))
     summary = server.tool_usage_summary({})
     assert summary["jobsCounted"] == 0
+    assert summary["byRole"] == []
+
+
+def test_jobs_counted_respects_since_days(clean_ledger) -> None:
+    job = server.upsert_job(
+        server.new_job_skeleton(provider="dev-triangle", route="architect-only", profile="old")
+    )
+    record = server.dispatch_record(FakeBinding("architect", "cli"), cli_payload())
+    record["at"] = "2000-01-01T00:00:00+00:00"
+    server.upsert_job({"id": job["id"], **server.merge_dispatch(job, record)})
+
+    summary = server.tool_usage_summary({"sinceDays": 1})
+
+    assert summary["jobsCounted"] == 0
+    assert summary["totalCalls"] == 0
     assert summary["byRole"] == []

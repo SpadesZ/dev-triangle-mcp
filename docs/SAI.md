@@ -1271,7 +1271,7 @@ W00 方案裁決書（gate #1 已核准，剩 #2–#7；不擋任何人）
 
 **`S4.8` = 0、`S4.9` = 0**（依 `NOTE-001`／`NOTE-008` 的機械判準，由 `tests/test_repo_integrity.py` 執行）。
 
-⚠️ **仍未實跑**：`.\scripts\demo-user-flow.ps1`（需本機已認證的 agy）、以及 `W05`／`W06` 對**真實端點**的呼叫（`C6`）。
+⚠️ **仍未通過**：`.\scripts\demo-user-flow.ps1` 尚未實跑。2026-08-20 已對真實 `agy` CLI 執行 `W06` `architect-only` 派送，但非空 patch 未通過 Orchestrator review，沒有進到 apply／machine verification／`SUCCESS`；大來源另受 Windows argv 上限限制。因此 `C6` 仍為紅燈，詳見 `docs/HANDOFF.md`。
 
 | W | 指令（repo 根執行） | 狀態 |
 |---|---|---|

@@ -90,7 +90,9 @@ S4.1 machine_verified_rate = 1.000 (1/1)
 ### 兩棒與 self-heal —— 只有 mock 證據
 
 `W05` Context Broker、`W06` Architect ＋ `apply_patch`、`W07` self-heal、`W13` NL 設定橋接。
-⚠️ **每一支測試都替換掉傳輸層**，從未對真實端點送出過任何請求。
+⚠️ 自動測試仍全部替換掉傳輸層。2026-08-20 已對真實 `agy` CLI 派送，但回傳 patch
+沒有通過 Orchestrator review，尚未進到 apply／machine verification／`SUCCESS`，所以 `C6`
+仍然是紅燈。
 
 ### 彈性化（`W14`–`W18`，施工後追加）
 
@@ -126,6 +128,20 @@ S4.1 machine_verified_rate = 1.000 (1/1)
 ```
 
 跑通一次就是這條路線第一次的真實證據。
+
+**2026-08-20 獨立驗收新增證據**：
+
+- 通用 CLI adapter 對短 prompt 真實回傳 `DEV_TRIANGLE_REAL_CLI_OK`，目的地是本機
+  `agy.exe`，`usage` 保持空 dict。
+- `architect-only` 對小檔案可產生真實 patch；但兩份非空 patch 都含錯誤敘述，已拒絕
+  套用，另一次指定 `claude-opus-4-6-thinking` 回空 patch。
+- 大來源經 `promptVia: arg` 會超過 Windows 命令列上限；現在會明確回報長度限制，
+  不再誤報 `Command not found`。`agy --print` 又不接受 stdin，因此這條 binding 目前
+  只適合小 payload。
+- 安全驗收沒有使用 `--dangerously-skip-permissions`；`--sandbox` 加「不得呼叫工具」
+  才能避免非互動執行要求讀取家目錄。
+
+結論仍是：**傳輸已實跑，產品閉環未通過**。不得把這批證據改寫成 `C6` 已完成。
 
 ### 2. Claude 端已用 `.mcp.json` 掛上（`claude_desktop_config.json` 這條路是死的）
 

@@ -421,6 +421,11 @@ def test_revert_declines_rather_than_leaving_no_profile(profile_env: Path, monke
     assert profiles.active_profile_name() == "cheap"
 
 
+def test_generated_active_profile_is_git_ignored() -> None:
+    ignore = (Path(__file__).resolve().parents[1] / ".gitignore").read_text(encoding="utf-8")
+    assert "config/active-profile.json" in ignore.splitlines()
+
+
 def test_no_confirmation_path_exists() -> None:
     # Owner ruling gate #8/#9: this tool never gates. Asserted on the schema so
     # a future "just one small confirm flag" shows up here.

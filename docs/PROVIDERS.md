@@ -76,13 +76,13 @@ otherwise. Checked against the six conditions above:
 | 3 | Task creation / handoff | ✅ | `dispatch_context_brief`, `dispatch_architect`, `apply_patch` |
 | 4 | Result collection | ✅ | `job.contextBrief` and `job.implementation` in the ledger |
 | 5 | Protocol smoke tests | ✅ | `tests/test_context_broker.py`, `tests/test_apply_patch.py`, in CI |
-| 6 | **A real path, not only mocks** | ❌ **Not met** | Every test substitutes `providers.http.chat`. No request has ever been sent to a real endpoint |
+| 6 | **A real path, not only mocks** | ❌ **Not met** | Real `agy` dispatches ran on 2026-08-20, but no returned patch passed review and reached apply + machine verification + `SUCCESS` |
 
 **Condition 6 is the whole point of the list.** Five green boxes and a mocked
 sixth is precisely the state the "not only mocks" wording exists to stop anyone
 from rounding up. Until someone configures a real model and endpoint and runs the
 route end to end, the honest description of Broker → Architect is
-"mechanism complete, route unproven".
+"mechanism complete, route not yet accepted".
 
 The parts that *are* validated against real execution are the verification runner
 and the quality gate: on 2026-08-19 the `default` suite ran three real commands
