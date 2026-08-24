@@ -8,15 +8,16 @@ read the source code.
 Dev Triangle MCP lets one main AI agent coordinate other AI coding agents
 through stable roles.
 
-The default setup is:
+The currently validated three-account setup is:
 
 ```text
-You talk to Codex.
-Codex talks to Dev Triangle MCP.
-Dev Triangle MCP can send work to Jules.
-Dev Triangle MCP can send local validation to Antigravity.
-Workers report back through a controlled result channel.
-Codex gives you the final answer.
+You talk to Codex, the current orchestrator.
+Gemini CLI produces a compact context brief and cannot use tools.
+Codex reviews the brief.
+Claude CLI produces a patch without editing the target repo.
+Codex reviews and applies the patch.
+The target repo's deterministic suite supplies the final evidence.
+Codex gives you the evidence-backed answer.
 ```
 
 The role-based setup is:
@@ -24,14 +25,15 @@ The role-based setup is:
 ```text
 You talk to the orchestrator.
 The orchestrator talks to Dev Triangle MCP.
-Dev Triangle MCP routes work to a worker or verifier.
-The worker reports back through a narrow return channel.
+Dev Triangle MCP routes work by role and binding kind.
+Agents return briefs, patches, artifacts, or diagnostic reports.
+The verifier records machine evidence separately from agent claims.
 The orchestrator reviews the result and answers you.
 ```
 
 The useful part is not merely launching tools. The useful part is that every
-task has a record, every handoff has a result path, and Codex can wait for the
-worker to finish instead of relying on manual copy and paste.
+task has a record, every dispatch has a destination and artifact path, and the
+orchestrator can complete the loop without manual copy and paste.
 
 ## What Problem It Solves
 
@@ -47,37 +49,46 @@ Without a control plane, a multi-agent workflow often looks like this:
 
 Dev Triangle MCP turns that into a trackable loop:
 
-1. Codex creates a job or handoff.
+1. The orchestrator creates a job and records the route.
 2. The worker receives a narrow task.
-3. The worker writes a structured result.
-4. Codex reads the result from the ledger.
-5. Codex decides the next step.
+3. The role returns a structured brief, patch, artifact, or report.
+4. The orchestrator reviews any patch before local mutation.
+5. The deterministic suite records exit codes and logs.
+6. The ledger accepts `SUCCESS` only when machine evidence passes.
 
 ## The Role Model
 
 ```mermaid
 flowchart LR
-  U(["User"]):::human --> O["Orchestrator<br/>understands and reviews"]:::orchestrator
-  O --> M["Dev Triangle MCP<br/>routes and records"]:::mcp
-  M --> W["Worker<br/>code output"]:::worker
-  M --> V["Verifier<br/>local validation"]:::verifier
-  W --> O
-  V --> R["Reporter<br/>final result only"]:::report
-  R --> S[("Ledger + result mailbox")]:::state
+  U["User"] -->|request| O["Orchestrator"]
+  O -->|job and route| M["Dev Triangle MCP"]
+  M --> B["Context Broker"]
+  B -->|brief| O
+  M --> A["Architect or Cloud Worker"]
+  A -->|patch or artifact| G{"Orchestrator review"}
+  G -->|reject| O
+  G -->|accept| V["Deterministic verification"]
+  V --> Q{"Machine checks pass?"}
+  Q -->|no| N[("NEEDS_REVIEW")]
+  Q -->|yes| S[("SUCCESS and evidence")]
+  N --> O
   S --> O
+  O -->|final answer| U
 
-  classDef human fill:#f8fafc,stroke:#475569,color:#0f172a,stroke-width:1px;
-  classDef orchestrator fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px;
-  classDef mcp fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:2px;
-  classDef worker fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:2px;
-  classDef verifier fill:#ffedd5,stroke:#ea580c,color:#431407,stroke-width:2px;
-  classDef report fill:#fce7f3,stroke:#db2777,color:#500724,stroke-width:2px;
-  classDef state fill:#fef9c3,stroke:#ca8a04,color:#422006,stroke-width:2px;
+  classDef process fill:#ffffff,stroke:#111111,color:#111111,stroke-width:1px;
+  classDef decision fill:#eeeeee,stroke:#111111,color:#111111,stroke-width:1px;
+  classDef store fill:#ffffff,stroke:#111111,color:#111111,stroke-width:1px;
+  class U,O,M,B,A,V process;
+  class G,Q decision;
+  class N,S store;
+  linkStyle default stroke:#111111,stroke-width:1px;
 ```
+
+**Figure 1. Simplified role, review, and machine-evidence flow.**
 
 See [Role Model](ROLE_MODEL.md) for the tool-agnostic contract.
 
-## The Default Jobs
+## The Current Validated Jobs
 
 ### Codex: Orchestrator
 
@@ -86,15 +97,32 @@ Codex is the agent you talk to. It should own:
 - Understanding your request.
 - Inspecting the repository.
 - Deciding whether work should stay local or be delegated.
-- Creating Jules sessions when useful.
-- Creating Antigravity handoffs when local validation is useful.
+- Dispatching a Context Broker or Architect when useful.
+- Using legacy cloud-worker or diagnostician routes when useful.
 - Reviewing results from workers.
 - Giving you the final answer.
 
 Codex gets the full MCP server because it is the only role that should control
 the whole workflow.
 
-### Jules: Cloud Coding Worker
+### Gemini CLI: Context Broker
+
+The Broker reads the approved source context and returns a structured brief with
+source references. The accepted binding uses stdin and the committed deny-all
+tool policy. It must not edit files or run tools.
+
+### Claude CLI: Architect
+
+The Architect receives the reviewed brief and identified source files. It
+returns a unified diff and test plan. It does not directly edit the target repo.
+
+### Built-in Deterministic Verifier
+
+`run_verification_suite` executes only commands declared by the target repo in
+`.dev-triangle/verify.json`. It records stdout, stderr, exit codes, duration, and
+`evidenceLevel: machine`. No agent report can replace this evidence.
+
+### Jules: Optional Cloud Worker Compatibility Route
 
 Jules is useful when work is large, repetitive, or PR-shaped.
 
@@ -109,16 +137,16 @@ Good Jules tasks:
 Jules needs `JULES_API_KEY` in the environment. Dev Triangle MCP does not store
 that key.
 
-### Antigravity: Local Verifier
+### Antigravity: Optional Local Diagnostician Compatibility Route
 
-Antigravity is useful when work depends on your local machine.
+Antigravity is useful when diagnosis depends on your local machine.
 
 Good Antigravity tasks:
 
-- Run local smoke tests.
+- Investigate a failed local smoke test.
 - Inspect local project files.
 - Verify Docker or local services.
-- Confirm a UI or CLI works on the actual machine.
+- Inspect whether a UI or CLI appears to work on the actual machine.
 - Write a structured report back to Codex.
 
 The stable unattended route is:
@@ -127,8 +155,8 @@ The stable unattended route is:
 agy --print
 ```
 
-The older IDE chat launch route can open a UI, but it is not the preferred
-closed-loop path for unattended runs.
+Its output is `agent_asserted`. It may explain why a check failed, but it cannot
+make a job `SUCCESS` without the built-in deterministic verifier.
 
 ## Why There Are Two MCP Servers
 
@@ -140,6 +168,11 @@ This is the main control-plane server.
 
 It can:
 
+- Start Broker-Architect jobs.
+- Dispatch context briefs and patches.
+- Apply reviewed patches.
+- Run deterministic verification suites.
+- Describe, activate, modify, and revert provider profiles.
 - Call Jules.
 - Create Antigravity handoffs.
 - Launch Antigravity.
@@ -163,39 +196,48 @@ commands.
 
 ## What A Closed Loop Means
 
-A closed loop means Codex can create a task, wait for the worker, and read the
-final result without the user manually carrying messages between tools.
+A closed loop means the orchestrator can create a task, receive artifacts,
+review and apply a patch, run machine verification, and read the final status
+without the user manually carrying messages between tools.
 
-For Antigravity, the loop is:
+For the validated three-account route, the loop is:
 
 ```mermaid
 sequenceDiagram
   participant User
   participant Codex
   participant MCP as dev_triangle MCP
-  participant AG as Antigravity agy
-  participant Report as dev-triangle-report MCP
-  participant Ledger as jobs.json + result file
+  participant Gemini as Context Broker
+  participant Claude as Architect
+  participant Repo as Target repo
+  participant Ledger as jobs.json
 
-  User->>Codex: "Verify this project locally"
-  Codex->>MCP: create_antigravity_handoff
-  MCP->>Ledger: write handoff markdown
-  Codex->>MCP: run_antigravity_handoff
-  MCP->>AG: agy --print with handoff prompt
-  AG->>Report: complete_dev_triangle_handoff
-  Report->>Ledger: write result markdown + update status
-  AG-->>MCP: stdout may be empty
-  MCP->>Ledger: recover marker from Antigravity conversation DB if needed
-  Codex->>MCP: antigravity_get_result
-  MCP->>Codex: status, result path, report content
-  Codex->>User: final explanation
+  User->>Codex: coding task
+  Codex->>MCP: start_job
+  MCP->>Ledger: persist route and source paths
+  Codex->>MCP: dispatch_context_brief
+  MCP->>Gemini: redacted allowlisted context
+  Gemini-->>Codex: brief and source references
+  Codex->>MCP: dispatch_architect after review
+  MCP->>Claude: reviewed brief and sources
+  Claude-->>Codex: patch path and test plan
+  Codex->>MCP: apply_patch after review
+  MCP->>Repo: apply on clean tree
+  Codex->>MCP: run_verification_suite
+  MCP->>Repo: declared allowlisted commands
+  Repo-->>MCP: exit codes and logs
+  MCP->>Ledger: SUCCESS or NEEDS_REVIEW with evidence
+  Codex->>User: final evidence-backed answer
 ```
 
-The result is considered ready when:
+**Figure 2. Sequence of the accepted three-account closed loop.**
 
-- The handoff status is `COMPLETED`.
-- The result file exists.
-- The result contains `DEV_TRIANGLE_RESULT_READY`.
+The result is accepted when:
+
+- The patch was reviewed before application.
+- The target tree passed the declared verification suite.
+- The ledger contains `evidenceLevel: machine` and exit code 0.
+- The job status is `SUCCESS`.
 
 ## What The Ledger Does
 
@@ -207,8 +249,10 @@ The ledger is a local JSON file:
 
 It stores:
 
-- Jules jobs.
-- Antigravity handoffs.
+- Broker and Architect dispatch records.
+- Patch paths and applied refs.
+- Machine-verification commands, outputs, and exit codes.
+- Jules jobs and Antigravity handoffs from compatibility routes.
 - Statuses.
 - Timestamps.
 - Result paths.
@@ -264,8 +308,9 @@ Full triangle task:
 Use Dev Triangle MCP for this project.
 
 Goal:
-Have Jules add the missing tests, then have Antigravity run local verification,
-then give me a final merge/no-merge recommendation.
+Have Jules add the missing tests. Use Antigravity only if local diagnosis is
+needed, then run the deterministic verification suite and give me a final
+merge/no-merge recommendation with machine evidence.
 ```
 
 ## Changing Models By Talking
@@ -360,7 +405,7 @@ config/providers.local-only.json
 ```
 
 ```text
-You:  Gemini's quota is gone. Switch to gemini-heavy... actually, claude-heavy.
+You:  Gemini's quota is gone. Switch to claude-heavy.
 Tool: Active profile is now 'claude-heavy' (was 'gemini-heavy').
       Not configured yet: ['cloudWorker']. Say "undo that" to switch back.
 ```
@@ -486,5 +531,5 @@ The safest default is:
 - Codex decides.
 - Workers do narrow jobs.
 - Results return through MCP.
-- Codex verifies.
+- Codex starts the deterministic verifier and reviews its machine evidence.
 - The user sees a clear final report.

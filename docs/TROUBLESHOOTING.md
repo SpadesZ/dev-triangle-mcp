@@ -19,7 +19,13 @@ worker still fails, inspect the worker-specific section below.
 
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
-| Codex cannot see `dev_triangle` | Codex config missing or points at the wrong path | Re-run `scripts\install-local.ps1`, then restart Codex |
+| Orchestrator cannot see `dev_triangle` | Client config missing or points at the wrong path | Re-run `scripts\install-local.ps1 -Orchestrator codex|claude|both`, then restart the client |
+| `ROLE_NOT_CONFIGURED` | No active profile or the selected slot is incomplete | Call `profile_describe`, then activate or complete the intended profile |
+| Profile activation appears ignored | An old server or client has stale state | Check `profile_describe.activeProfileSource`; `active-profile.json` should win without restart |
+| Gemini Broker can write files | Plan mode was used without the deny-all policy | Add the absolute `config/gemini-broker-deny-all.toml` path and rerun the write probe |
+| CLI row shows no token total | The CLI does not expose token usage | Read calls normally; `tokensAvailable: false` is expected and is not zero usage |
+| `apply_patch` refuses | Target tree is dirty or patch is invalid | Preserve/commit the user's work, review the patch, and retry on a clean tree |
+| Job cannot reach `SUCCESS` | Machine evidence is missing or exit code is nonzero | Run the target repo's confirmed `default` verification suite |
 | Antigravity sees `dev_triangle` instead of `dev-triangle-report` | Worker config has the full control-plane server | Re-run installer; worker agents should see report-only MCP |
 | `JULES_API_KEY` missing | Key was not exported in the shell or environment | Set `$env:JULES_API_KEY = "your key"` before starting the client |
 | Jules returns unauthorized | Wrong or expired key | Refresh the key and keep it out of Git |
@@ -31,9 +37,9 @@ worker still fails, inspect the worker-specific section below.
 | Smoke test passes but real demo fails | Protocol is healthy, real CLI/auth/model path is not | Run `doctor.ps1`, then test `agy --version` and the demo again |
 | CI passes but local worker fails | CI uses fake worker paths | Use `demo-user-flow.ps1` for real local validation |
 
-## Codex Config Problems
+## Orchestrator Config Problems
 
-Expected Codex config shape:
+Example Codex config shape:
 
 ```toml
 [mcp_servers.dev_triangle]
@@ -44,8 +50,9 @@ args = ["C:\\path\\to\\dev-triangle-mcp\\server.py"]
 Expected behavior:
 
 ```text
-Codex sees the full dev_triangle server.
-Codex can call Jules, Antigravity handoff, health, and ledger tools.
+The selected orchestrator sees the full dev_triangle server.
+It can use profiles, Broker-Architect dispatch, patch/verification gates,
+compatibility adapters, health checks, and the ledger.
 ```
 
 Fix:
@@ -54,11 +61,11 @@ Fix:
 .\scripts\install-local.ps1
 ```
 
-Then restart Codex so it reloads MCP config.
+Then restart the orchestrator client so it reloads MCP config.
 
 ## Antigravity Config Problems
 
-Expected worker config shape:
+Expected diagnostician config shape:
 
 ```json
 {

@@ -22,11 +22,11 @@
 > Antigravity execution is restricted to explicit CLI handoff commands, and
 > Jules access is restricted to the Jules REST API adapter.」（`server.py:17-20`）
 >
-> 「Dev Triangle MCP is a role-based MCP workflow control plane.
-> The current validated default profile uses Codex, Jules, and Antigravity.
-> Future provider profiles can map the same roles to other tools.」（`docs/ROLE_MODEL.md:161-165`）
+> 「Dev Triangle MCP is a role-based MCP control plane with user-selected API
+> and CLI bindings. Providers are replaceable; the review and evidence gates
+> are not.」（`docs/ROLE_MODEL.md`「Product Wording」）
 >
-> **這兩條合起來的意思是**：角色可以換人，但**護欄不能跟著換掉**；而且**在驗證完成之前不得宣稱新 profile 可用**（`docs/PROVIDERS.md:56-64`）。
+> **這兩條合起來的意思是**：角色可以換人，但**護欄不能跟著換掉**；而且**在真實路徑驗證完成之前不得宣稱新 profile 可用**（`docs/PROVIDERS.md`「Acceptance Matrix」）。
 >
 > ⚠️ **v0.2 註**：上面第一條（`server.py:17-20`）的**措辭**已被擁有者核准修改，但**約束本身沒有放寬**。改寫後的正確語意是「**no _generic_ shell executor; the suite runner is allowlisted and repo-declared**」。改寫動作是 `W12`，**在 `W12` 完成之前，`W03` 的程式碼與這段宣告是矛盾的，不得合併**。
 
@@ -145,7 +145,7 @@
 
 1. 它宣稱「**保留** `execute_local_verification()`」——**這個函式不存在**。現有的是 `tool_run_antigravity_handoff()`（`server.py:1373`），它啟動的是 agy CLI，**不是測試**。照提案字面施工的人會去找一個不存在的東西，然後自己發明一個。
 2. 它宣稱新流程有「確定性測試檢查（Exit Code 0）」——但**目前整條回報路徑沒有任何 exit code**。`complete_dev_triangle_handoff` 收到的 `status`、`commandsRun`、`findings` **全部是 worker 自己打的字串**（`antigravity_report_server.py:220-225`）。把「worker 說 pass」當成「測試真的 pass」，正是提案想解決的問題，而提案沒有指定誰去產生那個 exit code。
-3. 它把**模型版本號**寫進架構（"Gemini 3.7"、"Claude 5 / Opus"、"GPT-5.6"）。這與 `docs/ROLE_MODEL.md:167-172` 明列的「避免這樣講」直接衝突，且本輪**無法查證**這些版本號與「SWE-bench 87%+」的出處。
+3. 它把**模型版本號**寫進架構（"Gemini 3.7"、"Claude 5 / Opus"、"GPT-5.6"）。這與 `docs/ROLE_MODEL.md`「Product Wording」明列的「避免這樣講」直接衝突，且本輪**無法查證**這些版本號與「SWE-bench 87%+」的出處。
 
 ### 0.2 ID 命名規則
 
@@ -220,7 +220,7 @@ L6 帳本     jobs.json：每一站都留下誰做的、憑據是什麼、憑據
 
 ## S3 驗收契約
 
-### S3.1 沿用 `docs/PROVIDERS.md:56-64` 的六條（逐字，不得改義）
+### S3.1 沿用 `docs/PROVIDERS.md` Acceptance Matrix 的真實路徑原則（不得改義）
 
 `PROVIDERS.md` 已明文規定一個 profile 在具備下列六項之前不得宣稱 stable。本檔**把它從建議升格為驗收契約**：
 
@@ -307,7 +307,7 @@ C7（假綠燈）  >  C8（外洩）  >  C2/C3/C4（能不能跑）  >  C5/C6（
 - **門檻**：`= 0`。
 - ⚠️ **v0.2 修正的定義錯誤**：v0.1 寫「掃 `docs/`」，但本檔 `S1.1` 依規定**逐字保留**擁有者原話、`§0.1`／`S7.4`／附錄 A 也必須引用那些版本號才能說明為什麼排除它們。**照 v0.1 的定義，這個指標在本檔上永遠是 6，門檻 `= 0` 定義上不可能達成**——那是一個永遠會紅的量尺，和永遠是綠的量尺一樣沒有用（`S4.11` 精神）。本輪實測本檔命中 6 處，全部位於逐字引述段（`L68`、`L103`、`L104`、`L315`、`L1059`）。
 - **本檔自己的規則**（取代掃描）：`docs/SAI.md` 內出現模型版本號，**必須是逐字引述且必須在同段標明「無法查證／已排除」**。散文中主張性地使用即為違規，由人審抓。
-- **理由**：模型版本名只能活在**使用者自己的** `config/providers.<name>.json`（`C10`）。`docs/ROLE_MODEL.md:121-135` 已解釋為什麼工具名可以具體（相容包裝），但那指的是 `jules_*` 這種**供應商名**，不是**版本號**。
+- **理由**：模型版本名只能活在**使用者自己的** `config/providers.<name>.json`（`C10`）。`docs/ROLE_MODEL.md`「Compatibility Routes」已解釋為什麼工具名可以具體（相容包裝），但那指的是 `jules_*` 這種**供應商名**，不是**版本號**。
 
 ### S4.9 `silent_default_count` / `unresolved_role_count` —— 對應 `C10`（v0.2 新增）
 
@@ -417,7 +417,7 @@ C7（假綠燈）  >  C8（外洩）  >  C2/C3/C4（能不能跑）  >  C5/C6（
 
 **裁決**：**架構層一律使用角色名**（Context Broker / Architect / Verifier / Orchestrator / Reporter）。模型版本名只能出現在 `config/providers.*.json`。理由有二：
 
-1. `docs/ROLE_MODEL.md:167-172` 明文列出「避免這樣講」的句型，提案正好命中。
+1. `docs/ROLE_MODEL.md`「Product Wording」明文列出「避免這樣講」的句型，提案正好命中。
 2. 本輪**無法查證**這些版本號與 "SWE-bench 87%+" 的出處。**把無法查證的數字寫進規範文件，下一個施工者會把它當成已查證的前提。**
 
 ---
@@ -795,15 +795,15 @@ worker 寫的 handoff / result markdown
 | # | 不變量 | 來源 |
 |---|---|---|
 | `INV-01` | 不得開放**通用** shell 執行器。L4 **只能**跑目標 repo 自己宣告的 suite，且呼叫端不得傳入指令字串（v0.2 措辭精確化；經 `I4` gate #1 核准的白名單 runner 是具名例外，措辭改寫見 `W12`） | `server.py:17-20`、`ROADMAP.md:38`、2026-08-19 擁有者裁決 |
-| `INV-02` | worker / verifier 不得取得完整 `dev_triangle` 控制面 | `README.md` Safety Rules、`docs/PROVIDERS.md:178-190` |
+| `INV-02` | worker / verifier 不得取得完整 `dev_triangle` 控制面 | `README.md` Safety Rules、`docs/PROVIDERS.md` Rules That Must Stay Stable |
 | `INV-03` | **`SUCCESS` 只能由 `evidenceLevel == "machine"` 且 `exitCode == 0` 支撐**。代理人自述最高只能到 `NEEDS_REVIEW` | 本檔新增（`C7`） |
 | `INV-04` | 金鑰只存環境變數名，不寫進 repo、使用者設定、handoff、result、`jobs.json` | `README.md` Secrets 段 |
-| `INV-05` | 架構層不得出現硬編碼模型版本號 | 本檔新增（`C9`）、`docs/ROLE_MODEL.md:167-172` |
+| `INV-05` | 架構層不得出現硬編碼模型版本號 | 本檔新增（`C9`）、`docs/ROLE_MODEL.md` Product Wording |
 | `INV-06` | 任何外送 payload 必須先過 L8，fail-closed | 本檔新增（`C8`） |
 | `INV-07` | patch 套用前 working tree 必須乾淨，且要記下套用前的 git ref | 本檔新增 |
 | `INV-08` | self-heal 硬上限 1 次，且每次要記成本 | 提案原文「一次」＋本檔新增成本欄 |
 | `INV-09` | ledger 一律 camelCase；新增欄位只能 additive，不得改既有欄位語意 | `server.py:790` `dict.update()` 的行為 |
-| `INV-10` | 新 profile 在 `C1`–`C11` 全綠前，文件一律標「未驗證」（v0.2：`C9` → `C10`） | `docs/PROVIDERS.md:56-64` |
+| `INV-10` | 新 profile 在 `C1`–`C11` 全綠前，文件一律標「未驗證」（v0.2：`C9` → `C10`） | `docs/PROVIDERS.md` Acceptance Matrix |
 | `INV-11` | **角色 slot key 是本專案固定的契約，使用者不可更名**；profile 缺任一 slot key 必須**啟動即報錯**，不得靜默略過。使用者可自由更改的是 `displayName` | 本檔 v0.2 新增（`C10`、`A4.1`） |
 | `INV-12` | **不得有預設模型**。`model`／`apiKeyEnv` 為空即回 `ROLE_NOT_CONFIGURED`，設定解析鏈的末端是**報錯**不是 fallback | 本檔 v0.2 新增（`C10`、`A4.4`、`A4.5`） |
 | `INV-13` | **金鑰永不經過 NL 通道**。設定工具的 `apiKeyEnv` 只接受環境變數名稱；傳入疑似金鑰值即拒絕寫入，並明確告知使用者剛才那句話有問題 | 本檔 v0.3 新增（`C11`、`A4.6` 規則 1） |
@@ -924,7 +924,7 @@ W00 方案裁決書（gate #1 已核准，剩 #2–#7；不擋任何人）
 1. **`W03` 在 `W05`/`W06` 之前**：提案把「換模型」排最前、「品質門檻」排最後。**反了。** 現在的系統唯一真正壞掉的地方是**沒有機器憑據**（`S6`：回報欄位全為自述）。先換模型只會讓一條沒有量尺的流水線跑得更快。
 2. **`W08` 卡在 `W05` 之前**：`W05`/`W06` 是本專案第一次自動把 repo 內容往外送。**先開路再補護欄，中間那段時間的外洩沒有任何紀錄可以回查。**
 3. **`W04` 的前置是 `W03`**：`W04` 要讀 `verification.exitCode`。並行的話，`W04` 會用自己造的 fixture 通過測試——**測到的不是真實資料**。
-4. **`W11` 最後**：`INV-10` 規定 `C1`–`C11` 全綠前不得改狀態表。**提前改文件是本專案最容易犯、也最難發現的錯**（`docs/PROVIDERS.md:50-55` 現在的狀態表是誠實的，不要弄壞它）。
+4. **`W11` 最後**：`INV-10` 規定 `C1`–`C11` 全綠前不得改狀態表。**提前改文件是本專案最容易犯、也最難發現的錯**（`docs/PROVIDERS.md` Acceptance Matrix 必須只記錄已驗證狀態）。
 5. **`W12` 是 `W03` 的「合併前置」而非「開工前置」**（v0.2 新增）：`W03` 可以先寫、先測，但**不得在 `W12` 之前合併**。理由：合併後 repo 會同時存在「宣告禁止本機執行的註解」與「執行本機指令的程式碼」。**這種矛盾不會有任何測試會紅**，只會讓下一個維護者在兩者之間猜哪個是真的——而依照本專案的閱讀順序（`README` → 原始碼註解 → `docs/`），他多半會猜錯。
 6. **`W13` 的前置是 `W01` ＋ `W08`**（v0.3 新增）：`W01` 顯而易見（沒有 profile 就沒東西可寫）。**`W08` 這條容易漏**——`INV-13` 需要一個「這串看起來像不像金鑰」的判斷器，而那正是 `W08` 從 `scan_repo_for_publish_safety()`（`server.py:538`）抽出來的模組。**若 `W13` 先做，施工者會自己再寫一套秘密偵測規則，於是 repo 裡有兩套規則各自漂移**——那正是 `W08` 步驟 1 花力氣去避免的事。
 
@@ -986,7 +986,7 @@ W00 方案裁決書（gate #1 已核准，剩 #2–#7；不擋任何人）
   - 不實作任何 provider 的實際 HTTP 呼叫（那是 `W05`/`W06`）。
   - **不在本專案任何檔案填入模型名**，包含範例檔與測試 fixture（fixture 用 `"model": "<fake-model-for-test>"`）。
   - **不列舉 `provider` 的合法值**——列舉就是本專案在替使用者決定（`A4.3`）。
-  - 不改任何既有工具名（`docs/PROVIDERS.md:192-204` 相容包裝規則）。
+  - 不改任何既有工具名（`docs/PROVIDERS.md` Compatibility Providers）。
   - 不驗證 `displayName`。
 - **風險與回退**：低。主要風險是驗證太嚴擋住合法設定（例如使用者的環境變數名有小寫）。回退＝刪 `providers/` 並還原 `mcp_health_check`，系統回到 `a982663` 的行為。
 - **證據欄**：`config/providers.example.json` 全文、`mcp_health_check` 前後輸出 JSON（要看得到七個 slot 與 `configured` 旗標）、`silent_default_count` 的 grep 實測輸出、四支突變測試的紅→綠紀錄。
@@ -1057,7 +1057,7 @@ W00 方案裁決書（gate #1 已核准，剩 #2–#7；不擋任何人）
 - **對應**：`A1.2`、`A2`｜`G-2`｜`C2`、`C3`、`C4`、`S4.3`。
 - **前置**：`W01`（profile）、`W02`（schema）、**`W08`（護欄必須先在）**。
 - **步驟**：
-  1. 新增 `providers/context_broker.py`，介面 `detect()` / `create_task()` / `get_result()`（照 `docs/PROVIDERS.md:206-226` 的 lifecycle）。
+  1. 新增 `providers/context_broker.py`，介面 `detect()` / `create_task()` / `get_result()`（依 Provider role lifecycle）。
   2. **不複用 `http_json()`**（`server.py:260`）——它硬寫 `x-goog-api-key` 與 `jules_base_url()`，是 Jules 專用。新增一個通用的 `providers/http.py`。
   3. 輸出寫進 `job.contextBrief`，`impactedFiles` 必填。**尺寸硬上限防護**：設定 `MAX_BRIEF_CHARS = 30000`（約 8k tokens），若 `repoSummary` 超限則自動保留 `impactedFiles` 並截斷次要檔案描述，防止下游 Architect 發生 Context Window 溢位或 Token 成本暴增。
   4. 新增 `tool_dispatch_context_brief`，註冊進 `TOOLS`。
@@ -1141,7 +1141,7 @@ W00 方案裁決書（gate #1 已核准，剩 #2–#7；不擋任何人）
   3. 在 `docs/` 明寫：Jules 路線**保留**，適用於「多檔重複性修改 + 需要 PR 產出」。
 - **完成標準**：`docs/ROLE_MODEL.md` 的「Role Contracts」表新增一列 `Cloud Code Worker` 與 `Architect` 的差異說明；三條路線的選路準則寫進 `README.md`。
 - **突變驗證**：**不適用**（純文件盤點，符合 `I0.1` 豁免）。⚠️ 但若盤點結論是「需要新增保護」，那部分要另開工作包並補上突變驗證。
-- **不做什麼**：不刪除任何 `jules_*` 工具（`docs/PROVIDERS.md:192-204` 相容包裝規則）。
+- **不做什麼**：不刪除任何 `jules_*` 工具（`docs/PROVIDERS.md` Compatibility Providers）。
 - **風險與回退**：無程式碼風險。
 - **證據欄**：四項保護的逐項盤點表、`docs/ROLE_MODEL.md` diff。
 - **owner gate**：無。
@@ -1155,7 +1155,7 @@ W00 方案裁決書（gate #1 已核准，剩 #2–#7；不擋任何人）
   1. 新增 `requirements-dev.txt`（`pytest`），並確認裝在哪個直譯器（`S6`：`python` = 3.12.10，另有 `py -3.10`）。
   2. `ci.yml` 新增一步 `python -m pytest -q tests/`。
   3. 新增 fake provider（回固定 JSON），讓 `W05`/`W06` 的 lifecycle 在無金鑰環境下可測。
-  4. ⚠️ **fake provider 只算 `C5`，不算 `C6`**（`docs/PROVIDERS.md:63` 逐字：「not only mocks」）。
+  4. ⚠️ **fake provider 只算 `C5`，不算 `C6`**（`docs/PROVIDERS.md` Acceptance Matrix：真實 provider 路徑必須獨立通過）。
 - **完成標準**：CI 在 windows-latest 與 ubuntu-latest 兩邊都綠；故意讓一支突變測試留紅，確認 CI 真的會失敗（**不要只看它綠**）。
 - **突變驗證**：`ci.yml` 拿掉 pytest 那一步後，把 `tests/test_quality_gate.py` 弄紅，**CI 必須仍然綠**——這證明「沒有這一步就沒有防線」。加回後 CI 必須紅。
 - **不做什麼**：不在 CI 呼叫任何真實外部 API；不把金鑰放進 GitHub Secrets（本階段不需要）。
@@ -1165,12 +1165,12 @@ W00 方案裁決書（gate #1 已核准，剩 #2–#7；不擋任何人）
 
 ## W11 文件與 profile 狀態表更新（最後）
 
-- **目的**：`docs/PROVIDERS.md:50-55` 現在的狀態表是**誠實的**（三個新 profile 都標 "Design example"）。這一包在 `C1`–`C11` 全綠之後才動它。**提前改是本專案最容易犯的錯。**
+- **目的**：Provider 狀態表必須保持**誠實**；只有在 `C1`–`C11` 全綠之後才改成已驗證。**提前改是本專案最容易犯的錯。**
 - **對應**：`INV-10`、`C1`、`C10`｜`F8`。
 - **前置**：`W01`–`W10`、`W12`、`W13` 全部完成且 `C1`–`C11` 逐條有證據。
 - **步驟**：
   1. 逐條核對 `C1`–`C11`（v0.2：九條增為十條），每條附證據路徑。
-  2. 更新 `docs/PROVIDERS.md` 狀態表、`docs/ROLE_MODEL.md:114-120` 的「Documented but not fully implemented yet」清單、`ROADMAP.md`。
+  2. 更新 `docs/PROVIDERS.md` Acceptance Matrix、`docs/ROLE_MODEL.md` Current Validated Binding 與 `ROADMAP.md` Current Accepted Baseline。
   3. ~~更新 `server.py:17-20` 與 `ROADMAP.md:38` 的措辭。~~ → **v0.2 移交 `W12`**。理由：那件事**擋 `W03` 合併**，不能排到最後一包；v0.1 把它放這裡是排錯了位置。本包只需**確認 `W12` 已完成**。
   4. **（v0.2 新增）** 在 `docs/PROVIDERS.md` 補一節「如何指定你自己的名稱與模型」，指向 `A4`，並附一個**全部留空**的範例。
   5. 本檔升版並記錄哪些條文被實測推翻。

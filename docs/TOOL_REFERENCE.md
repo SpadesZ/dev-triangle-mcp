@@ -9,37 +9,44 @@ which tool exists for which job.
 The architecture is role-based:
 
 ```text
-Orchestrator -> Dev Triangle MCP -> Worker / Verifier -> Reporter
+Orchestrator -> Dev Triangle MCP -> role dispatch -> review -> machine evidence
 ```
 
-The current tool names are concrete because the current implemented providers
-are concrete:
+Generic closed-loop tools coexist with concrete compatibility adapters:
 
 ```text
 jules_*        -> current cloud code worker tools
 prepare_jules_repo -> local project publishing guard for Jules
-antigravity_*  -> current local verifier tools
+antigravity_*  -> current local diagnostician tools
+dispatch_*     -> Context Broker and Architect tools
+run_verification_suite -> deterministic machine evidence
+profile_*      -> role-binding and whole-profile controls
 job_*          -> shared ledger tools
 ```
 
-Future provider work may add generic provider internals, but these public names
-should remain stable compatibility wrappers for the current default profile.
+The concrete public names remain stable compatibility wrappers. They do not
+make Jules or Antigravity the architecture's fixed default.
 
 ```mermaid
 flowchart LR
-  O["Orchestrator"]:::orchestrator --> M["dev_triangle MCP"]:::mcp
-  M --> JT["jules_* tools<br/>cloud code worker"]:::worker
-  M --> AT["antigravity_* tools<br/>local verifier"]:::verifier
-  M --> LT["job_* tools<br/>ledger"]:::state
-  AT --> RT["dev-triangle-report tools<br/>worker completion"]:::report
+  O["Orchestrator"] --> M["dev_triangle MCP"]
+  M --> BA["start_job and dispatch_*<br/>Broker-Architect route"]
+  M --> PV["apply_patch and verification<br/>review and evidence gates"]
+  M --> JT["jules_*<br/>cloud-worker compatibility"]
+  M --> AT["antigravity_*<br/>diagnostician compatibility"]
+  M --> PT["profile_*<br/>role bindings"]
+  M --> LT[("job_* and usage_summary<br/>ledger and audit")]
+  AT --> RT["dev-triangle-report<br/>narrow completion channel"]
+  RT --> LT
 
-  classDef orchestrator fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px;
-  classDef mcp fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:2px;
-  classDef worker fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:2px;
-  classDef verifier fill:#ffedd5,stroke:#ea580c,color:#431407,stroke-width:2px;
-  classDef report fill:#fce7f3,stroke:#db2777,color:#500724,stroke-width:2px;
-  classDef state fill:#fef9c3,stroke:#ca8a04,color:#422006,stroke-width:2px;
+  classDef process fill:#ffffff,stroke:#111111,color:#111111,stroke-width:1px;
+  classDef store fill:#ffffff,stroke:#111111,color:#111111,stroke-width:1px;
+  class O,M,BA,PV,JT,AT,PT,RT process;
+  class LT store;
+  linkStyle default stroke:#111111,stroke-width:1px;
 ```
+
+**Figure 1. Main MCP tool groups and the narrow report return path.**
 
 ## Main Server: `dev_triangle`
 
@@ -52,11 +59,46 @@ server.py
 Audience:
 
 ```text
-Orchestrator agents, currently Codex by default.
+The selected orchestrator. The accepted local binding currently uses Codex.
 ```
 
 Do not expose this full server to normal worker agents unless you intentionally
 want them to control the whole workflow.
+
+## Broker-Architect And Verification Tools
+
+### `start_job`
+
+Creates a ledger job for `broker-architect`, `architect-only`, or another
+supported route. It records the repository, request, source paths, route, and
+profile before dispatch begins.
+
+### `dispatch_context_brief`
+
+Sends allowlisted, redacted repository context to the configured
+`contextBroker`. The result must be structured and identify source references.
+
+### `dispatch_architect`
+
+Sends the reviewed brief and selected sources to the configured `architect`.
+The expected result is a patch and test plan, not direct target-repo edits.
+
+### `apply_patch`
+
+Applies an orchestrator-reviewed patch. It refuses a dirty target tree and
+records the target ref and applied patch path for audit and rollback.
+
+### `run_verification_suite`
+
+Runs only the commands declared in the target repo's
+`.dev-triangle/verify.json`. It records real exit codes, outputs, duration, and
+`evidenceLevel: machine`. A job cannot reach `SUCCESS` without passing machine
+evidence.
+
+### `self_heal`
+
+Allows at most one repair attempt after machine verification fails. It does not
+create an unbounded agent loop and it does not bypass patch review.
 
 ## Jules Tools
 
@@ -387,7 +429,7 @@ antigravity_report_server.py
 Audience:
 
 ```text
-Worker/verifier agents, especially Antigravity.
+Worker or diagnostician agents, especially the Antigravity compatibility route.
 ```
 
 This server intentionally has only two tools.
@@ -427,9 +469,12 @@ Codex uses that marker to know the result is ready.
 
 | Tool group | Who should use it | Why |
 | --- | --- | --- |
+| Broker-Architect dispatch | Orchestrator | Bounded context and patch production |
+| Patch and verification tools | Orchestrator | Review, local mutation, and machine evidence |
+| Profile tools | Orchestrator | Explicit provider selection and audit |
 | Jules tools | Orchestrator | Cloud coding control |
-| Antigravity handoff tools | Orchestrator | Local validation routing |
+| Antigravity handoff tools | Orchestrator | Local diagnostic routing |
 | Ledger tools | Orchestrator | Tracking and audit |
-| Report tools | Workers | Narrow result submission |
+| Report tools | Workers or diagnosticians | Narrow result submission |
 
 The design avoids giving worker agents broad orchestration powers.

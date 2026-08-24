@@ -24,7 +24,7 @@ In Dev Triangle MCP, `server.py` is the control-plane server.
 The main agent the user talks to. The orchestrator understands the task, routes
 work, reviews results, and gives the final answer.
 
-Default orchestrator:
+Current accepted local binding:
 
 ```text
 Codex
@@ -36,14 +36,33 @@ An agent or service that receives a bounded task from the orchestrator.
 
 Examples:
 
-- Jules as a cloud coding worker.
-- Antigravity as a local verifier.
+- A Context Broker that produces a grounded brief.
+- An Architect that produces a patch.
+- Jules as a cloud-worker compatibility provider.
+
+## Context Broker
+
+A bounded role that reads approved, redacted source context and returns a
+structured brief with source references. The accepted local binding uses Gemini
+CLI with a deny-all tool policy.
+
+## Architect
+
+A bounded role that turns a reviewed brief and selected source files into a
+patch and test plan. The accepted local binding uses Claude CLI in non-writing
+mode.
 
 ## Verifier
 
-A worker whose main job is to check whether something works.
+The deterministic evidence source. `run_verification_suite` runs only commands
+declared by the target repo and records outputs and exit codes. An agent's claim
+that tests passed is not verifier evidence.
 
-Antigravity is the default local verifier.
+## Diagnostician
+
+An optional agent that investigates local state and explains failures. Its
+result is `agent_asserted`. Antigravity is an implemented diagnostician
+compatibility route.
 
 ## Handoff
 
@@ -135,16 +154,18 @@ user's machine.
 
 ## Provider Profile
 
-A future configuration shape that lets the roles be swapped.
+A configuration file that binds the fixed role slots to user-selected API or
+CLI providers.
 
-Example future profile:
+Accepted local example:
 
 ```text
-Claude orchestrator -> Gemini CLI code worker -> Antigravity verifier
+Codex orchestrator -> Gemini Context Broker -> Claude Architect
+                   -> deterministic verification
 ```
 
-The current stable runtime remains:
+This is one validated binding, not a provider default. If no profile is selected:
 
 ```text
-Codex -> Jules -> Antigravity
+ROLE_NOT_CONFIGURED
 ```

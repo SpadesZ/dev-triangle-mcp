@@ -1,311 +1,196 @@
-# Provider Model
+# Provider Profiles
 
-Dev Triangle MCP is designed around provider roles, but it currently ships with
-one stable runtime profile:
+Dev Triangle MCP maps stable role contracts to user-selected API or CLI
+bindings. The repository does not ship an implicit provider profile and does
+not assign a permanent vendor to a role.
+
+## Profile Selection
+
+The active profile is resolved in this order:
+
+1. `config/active-profile.json`, written by `profile_activate`.
+2. `DEV_TRIANGLE_PROFILE`, normally set by installation.
+3. No active profile.
+
+There is no fallback to the first file found. A missing profile or role produces
+an explicit configuration error.
+
+Committed files:
 
 ```text
-Codex -> Dev Triangle MCP -> Jules -> Antigravity
+config/providers.example.json
+config/gemini-broker-deny-all.toml
 ```
 
-This document explains how the same role shape could support other tools later.
-It is a design document, not a promise that all profiles are implemented today.
+Machine-local profiles are ignored because they contain executable paths and
+local choices. Secrets are never stored in them; `apiKeyEnv` stores only an
+environment-variable name.
 
-## Provider Slot Diagram
+## Slot Model
 
 ```mermaid
 flowchart LR
-  P["Provider Profile"]:::profile --> O["orchestrator<br/>required"]:::orchestrator
-  P --> W["cloud_code_worker<br/>optional"]:::worker
-  P --> V["local_verifier<br/>optional"]:::verifier
-  P --> R["reporter<br/>required for workers"]:::report
-  O --> M["dev_triangle MCP<br/>full control plane"]:::mcp
-  W --> R
-  V --> R
-  R --> S[("ledger + result mailbox")]:::state
+  P["Selected provider profile"] --> O["orchestrator"]
+  P --> B["contextBroker"]
+  P --> A["architect"]
+  P --> W["cloudWorker"]
+  P --> V["verifier"]
+  P --> D["diagnostician"]
+  P --> R["reporter"]
+  O --> M["dev_triangle control plane"]
+  B -->|brief| M
+  A -->|patch| M
+  W -->|artifact| M
+  V -->|role result| M
+  D -->|report| X["report-only MCP"]
+  R --> X
+  M --> S[("ledger and evidence")]
+  X --> S
 
-  classDef profile fill:#f8fafc,stroke:#475569,color:#0f172a,stroke-width:2px;
-  classDef orchestrator fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px;
-  classDef mcp fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:2px;
-  classDef worker fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:2px;
-  classDef verifier fill:#ffedd5,stroke:#ea580c,color:#431407,stroke-width:2px;
-  classDef report fill:#fce7f3,stroke:#db2777,color:#500724,stroke-width:2px;
-  classDef state fill:#fef9c3,stroke:#ca8a04,color:#422006,stroke-width:2px;
+  classDef process fill:#ffffff,stroke:#111111,color:#111111,stroke-width:1px;
+  classDef store fill:#ffffff,stroke:#111111,color:#111111,stroke-width:1px;
+  class P,O,B,A,W,V,D,R,M,X process;
+  class S store;
+  linkStyle default stroke:#111111,stroke-width:1px;
 ```
 
-## Current Stable Profile
+**Figure 1. Fixed provider slots and their bounded return paths.** Empty slots
+are allowed. The profile is explicit, and worker roles do not receive the full
+control plane.
+
+## Binding Kinds
+
+Each role binding declares its transport:
+
+| `kind` | Required fields | Dispatch behavior |
+| --- | --- | --- |
+| `api` | `baseUrl`, `model`, optional `apiKeyEnv` | HTTP provider adapter |
+| `cli` | `command`, verified `args`, `promptVia`, optional `promptArg` | Local CLI adapter |
+
+`providers/dispatch.py` routes by `kind`, not by display name or vendor. The CLI
+command, arguments, prompt transport, and kind are file-only settings because a
+natural-language change to an executable is a code-execution boundary.
+
+## Current Validated Local Binding
+
+The accepted `three-account` profile used:
 
 ```text
-profile: codex-jules-antigravity
-
-orchestrator: Codex
-cloud_code_worker: Jules
-local_verifier: Antigravity through agy
-reporter: dev-triangle-report MCP
+orchestrator   = Codex
+contextBroker = Gemini CLI, stdin, deny-all tool policy
+architect     = Claude CLI, non-writing mode
+verifier      = built-in deterministic suite runner
 ```
 
-This is the profile local productization is built around.
+`cloudWorker`, `diagnostician`, and `reporter` are optional for this route. The
+Jules and Antigravity compatibility tools remain independently available.
 
-## Implementation Status
-
-| Profile | Status | Notes |
-| --- | --- | --- |
-| `codex-jules-antigravity` | Implemented and validated | Current default |
-| `claude-jules-antigravity` | Design example | Needs orchestrator config docs and validation |
-| `codex-gemini-antigravity` | Design example | Needs Gemini worker adapter |
-| `claude-gemini-antigravity` | Design example | Needs both orchestrator docs and worker adapter |
-| User-defined Codex + Gemini Broker + Claude Architect | Validated local binding | Machine-local CLI paths stay in the user's profile; the reusable deny-all Broker policy is committed |
-
-The project should not advertise a profile as stable until it has:
-
-- Configuration examples.
-- Provider detection.
-- Task creation or handoff support.
-- Result collection.
-- Protocol smoke tests.
-- A real local or cloud validation path, not only mocks.
-
-### Where The Broker → Architect Route Actually Stands
-
-The role-binding mechanism landed in the 2026-08-19 upgrade. On 2026-08-20 the
-route also passed the real, non-mocked acceptance path. Checked against the six
-conditions above:
+### Acceptance Matrix
 
 | # | Condition | Status | Evidence |
 | --- | --- | --- | --- |
-| 1 | Configuration examples | ✅ | `config/providers.example.json`, all fields blank |
-| 2 | Provider detection | ✅ | `providers/context_broker.py::detect`, `mcp_health_check` profile block |
-| 3 | Task creation / handoff | ✅ | `dispatch_context_brief`, `dispatch_architect`, `apply_patch` |
-| 4 | Result collection | ✅ | `job.contextBrief` and `job.implementation` in the ledger |
-| 5 | Protocol smoke tests | ✅ | `tests/test_context_broker.py`, `tests/test_apply_patch.py`, in CI |
-| 6 | **A real path, not only mocks** | ✅ | Job `dev-triangle-20260820062514-10202cf4`: Gemini Broker → Claude Architect → reviewed patch → apply → primary machine verification (exit 0) → persisted `SUCCESS`; rollback drill restored the disposable fixture cleanly |
+| 1 | Profile parsing and fixed slot validation | Pass | `providers/profiles.py`; unit tests |
+| 2 | API and CLI dispatch by `kind` | Pass | `providers/dispatch.py`; CLI tests |
+| 3 | Broker output contains brief and source references | Pass | Persisted job context brief |
+| 4 | Architect output contains a patch path and test plan | Pass | Persisted implementation record |
+| 5 | Orchestrator review before patch application | Pass | Accepted disposable-repo run |
+| 6 | Machine verification gates `SUCCESS` | Pass | `evidenceLevel=machine`, exit code 0 |
+| 7 | Real providers, not only mocks | Pass | Job `dev-triangle-20260820062514-10202cf4` |
+| 8 | Rollback restores a clean target tree | Pass | Disposable fixture rollback drill |
 
-**Condition 6 is the whole point of the list.** The accepted binding used Gemini
-as a deny-all Context Broker and Claude as a non-writing Architect. Codex reviewed
-both boundaries, while the target repo's `default` suite—not either model—made
-the final decision. `usage_summary` persisted the two CLI destinations separately
-and marked token totals unavailable rather than inventing zeros.
-
-The parts that *are* validated against real execution are the verification runner
-and the quality gate: on 2026-08-19 the `default` suite ran three real commands
-against this repository and returned exit code 0 in 13.79 seconds, and a job
-carrying only an agent's claim was downgraded to `NEEDS_REVIEW` while the same
-job with machine evidence was allowed to reach `SUCCESS`.
-
-## Choosing Your Own Names And Models
-
-Every role's display name, model, endpoint, and key variable is yours to set.
-This project ships no defaults for any of them — see `docs/SAI.md` A4 for the
-full rules, and `config/README.md` for the field-by-field reference.
-
-The short version:
+The accepted run followed:
 
 ```text
-slot key                  fixed by this project   renaming it silently breaks the role
-displayName               yours                   any text, any language, safe to change
-model / baseUrl / apiKeyEnv   yours               this project never fills these in
+Gemini Broker
+-> Codex brief review
+-> Claude Architect
+-> Codex patch review
+-> apply_patch
+-> target repo deterministic suite
+-> persisted SUCCESS
+-> rollback-clean fixture
 ```
 
-Copy the template and select it:
+Gemini's plan mode alone was not sufficient to prevent writes. The committed
+`config/gemini-broker-deny-all.toml` removed every tool; the live write probe
+then produced zero tool calls and zero files.
 
-```powershell
-Copy-Item config\providers.example.json config\providers.mine.json
-$env:DEV_TRIANGLE_PROFILE = "mine"
-```
+## CLI Binding Rules
 
-Then either edit the file, or just say what you want:
+1. Verify the CLI's non-interactive syntax before saving it.
+2. Prefer stdin for large prompts and Windows command-line limits.
+3. Keep safety policy paths absolute when the CLI runs in the target repo.
+4. Parse structured JSON; one repair prompt is allowed, not unlimited retries.
+5. Treat an exit code 0 with empty output as an explicit provider error unless a
+   documented result channel proves completion.
+6. Do not report a missing CLI token count as zero. Use
+   `tokensAvailable: false`.
+7. Re-probe flags, stdin behavior, JSON, timeout, and write policy after a CLI
+   upgrade.
+
+## Conversational Changes
+
+Data fields may be changed through `profile_set_role`:
 
 ```text
-Switch the architect to <model id>.
-The architect's key is in MY_ARCHITECT_KEY.
+displayName
+model
+baseUrl
+apiKeyEnv
+enabled
 ```
 
-Three behaviours worth knowing before you start:
-
-- **Empty is not a default, it is a refusal.** An `api` role with no `model`
-  returns `ROLE_NOT_CONFIGURED` and names the line to fill. It never picks one.
-- **`apiKeyEnv` takes a variable NAME, never a key.** A value that looks like a
-  credential is rejected at load time and at write time, and nothing is stored.
-- **Changes are never gated, and never silent.** Every change is reported back
-  with before → after and whether it was permanent, and `profile_revert_last`
-  undoes it in one sentence.
-
-## Why Providers Matter
-
-Users may want to swap role providers:
-
-- Claude as the orchestrator.
-- Gemini CLI as the code worker.
-- A different local verifier.
-- A different report channel.
-
-The workflow should not hard-code one company into every concept. The durable
-idea is the role split:
+Executable fields remain file-only:
 
 ```text
-orchestrator -> decides and reviews
-worker       -> does bounded work
-verifier     -> checks local reality
-reporter     -> sends final result back
+kind
+command
+args
+promptArg
+promptVia
 ```
 
-## Role Contracts
+Every accepted change records the before and after values, scope, verification
+status, and the user wording that caused it. `profile_revert_last` records the
+undo as another change.
 
-### Orchestrator
+## Whole-Profile Switching
 
-The orchestrator must be able to:
-
-- Talk to the user.
-- Read project context.
-- Decide the route.
-- Call the full control-plane MCP server.
-- Review worker output.
-- Produce the final user-facing answer.
-
-Only the orchestrator should see:
+Use `profile_activate` when quota, cost, privacy, or task shape requires a new
+set of bindings:
 
 ```text
-dev_triangle -> server.py
+Activate profile claude-heavy.
+Undo that.
 ```
 
-### Cloud Code Worker
+The selected file survives a server restart and takes precedence over the
+installer's environment value. There is no automatic failover. A failed role is
+reported, and the user chooses the replacement profile.
 
-The cloud worker must be able to:
+## Compatibility Providers
 
-- Receive a bounded coding task.
-- Return progress, plan, patch, PR, or artifacts.
-- Pause for plan approval when requested.
+The repo retains concrete public tool names:
 
-It should not need:
+| Adapter | Purpose | Current status |
+| --- | --- | --- |
+| `jules_*` | Cloud sessions, patch/PR output, guarded private repo preparation | Implemented compatibility route |
+| `antigravity_*` | Local diagnostic handoff and result recovery | Implemented compatibility route |
+| `dev_triangle_report_*` | Narrow worker/diagnostician completion channel | Implemented report surface |
 
-- Local secrets.
-- The full MCP control plane.
-- Permission to create more worker tasks.
+These names stay stable for existing clients. They do not define the generic
+role architecture.
 
-### Local Verifier
+## Rules That Must Stay Stable
 
-The verifier must be able to:
+- No implicit provider or model default.
+- One explicit orchestrator owns the full control plane.
+- Worker and diagnostician roles receive narrow inputs and return paths.
+- Outbound repository context is allowlisted and redacted.
+- Provider errors do not trigger silent downgrade or failover.
+- Patches require orchestrator review and a clean target tree.
+- `SUCCESS` requires target-repo machine evidence.
+- Mock paths are CI evidence for plumbing, not proof of a real provider route.
 
-- Inspect the local repo.
-- Run local validation commands.
-- Report findings and recommendations.
-
-It should usually receive:
-
-```text
-task handoff + dev-triangle-report MCP
-```
-
-### Reporter
-
-The reporter must be narrow. It exists so workers can submit results without
-getting broad orchestration permissions.
-
-Current reporter:
-
-```text
-dev-triangle-report -> antigravity_report_server.py
-```
-
-## Example Future Profiles
-
-Claude as the orchestrator:
-
-```text
-profile: claude-jules-antigravity
-
-orchestrator: Claude
-cloud_code_worker: Jules
-local_verifier: Antigravity through agy
-reporter: dev-triangle-report MCP
-```
-
-Gemini CLI as the code worker:
-
-```text
-profile: codex-gemini-antigravity
-
-orchestrator: Codex
-cloud_code_worker: Gemini CLI
-local_verifier: Antigravity through agy
-reporter: dev-triangle-report MCP
-```
-
-Claude plus Gemini:
-
-```text
-profile: claude-gemini-antigravity
-
-orchestrator: Claude
-cloud_code_worker: Gemini CLI
-local_verifier: Antigravity through agy
-reporter: dev-triangle-report MCP
-```
-
-## Design Rule
-
-Only the orchestrator should see the full control-plane MCP server.
-
-Workers should receive narrow task input and a narrow reporting surface. This
-prevents worker agents from accidentally calling unrelated tools, creating
-circular delegation, or touching secrets they do not need.
-
-```text
-orchestrator -> full dev_triangle MCP
-worker       -> task prompt + report-only MCP
-verifier     -> handoff + report-only MCP
-```
-
-## Compatibility Wrappers
-
-The current MCP tools are intentionally concrete:
-
-```text
-jules_*
-antigravity_*
-dev_triangle_report_*
-```
-
-They are honest compatibility wrappers for the providers that are actually
-implemented today. A future provider registry can add generic internals without
-breaking these public names.
-
-## Future Provider Registry
-
-A future implementation could introduce:
-
-```text
-providers/
-  jules.py
-  antigravity.py
-  gemini_cli.py
-  claude_code.py
-```
-
-Each provider should implement a small lifecycle:
-
-```text
-detect
-create_task
-run_or_resume
-get_result
-submit_result
-```
-
-The current public MCP tools should remain stable compatibility wrappers:
-
-```text
-jules_*        -> Jules provider adapter
-antigravity_*  -> Antigravity provider adapter
-job_*          -> shared ledger adapter
-```
-
-## What Must Stay Stable
-
-Even if provider profiles are added, these rules should stay stable:
-
-- The default profile remains `codex-jules-antigravity` unless explicitly
-  changed.
-- Worker agents do not receive the full control plane by default.
-- Secrets are not written into repo config.
-- Mock providers are tests only.
-- Real provider completion must be labeled as real provider completion.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the end-to-end figures and
+[HANDOFF.md](HANDOFF.md) for the accepted run details.

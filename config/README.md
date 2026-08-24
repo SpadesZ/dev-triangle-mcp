@@ -73,13 +73,13 @@ do not hand-edit or commit the generated file.
 
 ## The Important Split
 
-Codex should see:
+The selected orchestrator should see:
 
 ```text
 dev_triangle -> server.py
 ```
 
-Antigravity and Gemini-side worker config should see:
+External worker or diagnostician configs should see only:
 
 ```text
 dev-triangle-report -> antigravity_report_server.py
@@ -88,11 +88,11 @@ dev-triangle-report -> antigravity_report_server.py
 Reason:
 
 ```text
-Codex orchestrates the whole workflow.
+The selected orchestrator controls the whole workflow.
 Workers only need to submit final results.
 ```
 
-Do not attach the full `dev_triangle` server to worker/verifier agents unless
+Do not attach the full `dev_triangle` server to worker or diagnostician agents unless
 you intentionally want them to have orchestration permissions.
 
 ## Secrets
@@ -115,7 +115,7 @@ Manual edits are useful when:
 - Your repo is not in the default location.
 - You want a custom Python path.
 - You want a custom `agy` path.
-- You are testing a future provider profile.
+- You are testing a new provider profile before real-path acceptance.
 
 After manual edits, run:
 

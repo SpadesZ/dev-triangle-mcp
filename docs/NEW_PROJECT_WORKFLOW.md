@@ -125,47 +125,71 @@ Add smoke tests for the CLI parser and run them locally.
 ```
 
 ```text
-Have Jules upgrade the old API usage across the repo, then have Codex review the
+Have Jules upgrade the old API usage across the repo, then have the orchestrator review the
 patch and run local tests.
 ```
 
 ```text
-Create an Antigravity handoff to verify Docker startup and submit a final
-report back to Codex.
+Create an Antigravity handoff to diagnose Docker startup, submit the report,
+then run the deterministic verification suite before the final decision.
 ```
 
-## The Route Codex Should Choose
+## The Route The Orchestrator Should Choose
 
-### Route 1: Codex Only
+### Route 1: Direct Local Work
 
 Use when the task is small.
 
 Flow:
 
 ```text
-User -> Codex -> local edit/test -> final answer
+User -> Orchestrator -> local edit -> deterministic verification -> final answer
 ```
 
-No MCP delegation is necessary, though Codex may still use MCP health checks.
+No provider dispatch is necessary, though the orchestrator should still use the
+machine-evidence gate for non-trivial code changes.
 
-### Route 2: Jules
+### Route 2: Broker -> Architect
+
+Use when a large repository should be reduced to a grounded brief before patch
+generation.
+
+Flow:
+
+```text
+User -> Orchestrator -> Context Broker -> brief review -> Architect
+     -> patch review/apply -> deterministic verification -> final answer
+```
+
+Before dispatch, check:
+
+- A profile is active and both roles are configured.
+- The target repo is present in `config/outbound-repos.json`.
+- `sourcePaths` are explicit and relevant.
+- The Broker cannot call tools.
+- The target repo declares a `default` verification suite.
+
+Use `architect-only` when the source set is already small and explicit.
+
+### Route 3: Jules Compatibility Route
 
 Use when the task is large or repetitive.
 
 Flow:
 
 ```text
-User -> Codex -> dev_triangle MCP -> Jules -> outputs/patch/PR -> Codex review
+User -> Orchestrator -> dev_triangle MCP -> Jules -> outputs/patch/PR
+     -> Orchestrator review -> deterministic verification
 ```
 
-Before creating a Jules session, Codex should check:
+Before creating a Jules session, the orchestrator should check:
 
 - Is `JULES_API_KEY` available?
 - Is the project already in a GitHub repo Jules can see?
 - Is the task clear enough to delegate?
 - Should plan approval be required?
 
-If the project is only a local folder, Codex should first call
+If the project is only a local folder, the orchestrator should first call
 `prepare_jules_repo`.
 
 Safe repo preparation flow:
@@ -191,17 +215,18 @@ guard.
 The default should be `requirePlanApproval=true` so a human or orchestrator can
 review the plan before code changes proceed.
 
-### Route 3: Antigravity
+### Route 4: Antigravity Diagnostic Compatibility Route
 
-Use when the task needs local verification.
+Use when the task needs local investigation or environment-specific diagnosis.
 
 Flow:
 
 ```text
-User -> Codex -> create handoff -> agy --print -> report MCP -> Codex result
+User -> Orchestrator -> create handoff -> agy --print -> report MCP
+     -> Orchestrator -> deterministic verification if acceptance is required
 ```
 
-Codex should include:
+The orchestrator should include:
 
 - The project path.
 - The objective.
@@ -221,24 +246,30 @@ or by writing a result file that contains:
 DEV_TRIANGLE_RESULT_READY
 ```
 
-### Route 4: Full Triangle
+This marker proves that the report returned. It does not prove the target repo
+passed. Use `run_verification_suite` for machine evidence.
 
-Use when you want broad implementation plus local validation.
+### Route 5: Combined Route
+
+Use when you want broad implementation, local diagnosis when needed, and final
+machine acceptance.
 
 Flow:
 
 ```text
 User
-  -> Codex
-  -> Jules for code work
-  -> Codex review
-  -> Antigravity local verification
-  -> Codex final recommendation
+  -> Orchestrator
+  -> Broker-Architect or cloud worker for code work
+  -> Orchestrator review/apply
+  -> Optional diagnostician for failure analysis
+  -> Deterministic verification
+  -> Orchestrator final recommendation
 ```
 
-This is the route for higher-confidence automation.
+This is the route for higher-confidence automation. The final confidence comes
+from the review and evidence gates, not from the number of agents used.
 
-## What Codex Should Report Back
+## What The Orchestrator Should Report Back
 
 A good final answer should include:
 
@@ -252,10 +283,10 @@ A good final answer should include:
 Example:
 
 ```text
-Dev Triangle route used: Antigravity local verification.
-Handoff status: COMPLETED.
-Result marker: DEV_TRIANGLE_RESULT_READY.
-Commands run: python -m py_compile, python smoke_test.py.
+Dev Triangle route used: Antigravity diagnosis plus deterministic verification.
+Diagnostic handoff status: COMPLETED (agent_asserted).
+Machine verification: default suite, exit code 0 (machine).
+Ledger status: SUCCESS.
 Recommendation: ready to merge.
 ```
 
@@ -281,15 +312,19 @@ logs/
 
 ## Stable Ending Conditions
 
-For a task to be considered done, at least one of these should be true:
+For a code task to be considered done:
 
-- Codex completed the local change and tests passed.
-- Jules produced outputs and Codex reviewed them.
-- Antigravity returned `COMPLETED` with `DEV_TRIANGLE_RESULT_READY`.
-- CI passed after pushing the change.
+- The orchestrator reviewed the final patch or implementation.
+- The target repo's declared machine verification passed with exit code 0.
+- The ledger records the route, artifacts, and machine evidence.
+- If the task required publication, the pushed revision's CI passed.
+
+A Broker brief, Architect patch, Jules output, or Antigravity `COMPLETED` report
+is an intermediate artifact. None is final acceptance by itself.
 
 For important work, prefer:
 
 ```text
-Jules or Codex implementation -> Antigravity local verification -> CI -> Codex final answer
+bounded implementation -> orchestrator review/apply -> deterministic verification
+-> CI when published -> orchestrator final answer
 ```

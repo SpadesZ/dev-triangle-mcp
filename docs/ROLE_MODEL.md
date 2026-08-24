@@ -1,224 +1,160 @@
 # Role Model
 
-Dev Triangle MCP is easiest to understand as a role-based workflow.
+Dev Triangle MCP assigns contracts to role slots and providers to profiles. A
+role says what work is allowed. A binding says which API or CLI currently does
+that work.
 
-The roles are stable:
+## Fixed Contracts, Flexible Bindings
 
-```text
-User -> Orchestrator -> Dev Triangle MCP -> Workers -> Reporter -> Orchestrator
-```
+The seven slot keys are fixed because runtime dispatch depends on them:
 
-The current default tools are concrete:
-
-```text
-Codex -> Dev Triangle MCP -> Jules / Antigravity -> dev-triangle-report -> Codex
-```
-
-This means the project is **tool-agnostic in architecture** but **specific in
-the current validated implementation**.
-
-## Role Diagram
-
-```mermaid
-flowchart TB
-  U(["User request"]):::human
-
-  subgraph Control["Control Layer"]
-    O["Orchestrator<br/>understands, routes, reviews"]:::orchestrator
-    M["Dev Triangle MCP<br/>tools, ledger, handoffs"]:::mcp
-  end
-
-  subgraph Work["Work Layer"]
-    W["Cloud Code Worker<br/>large code tasks, patches, PRs"]:::worker
-    V["Local Verifier<br/>local commands, files, environment"]:::verifier
-  end
-
-  subgraph Return["Return Layer"]
-    R["Report-only MCP<br/>small completion surface"]:::report
-    S[("Ledger + Result Mailbox<br/>jobs, handoffs, reports")]:::state
-  end
-
-  U --> O
-  O --> M
-  M --> W
-  M --> V
-  W --> O
-  V --> R
-  R --> S
-  S --> O
-  O --> A(["Final answer"]):::human
-
-  classDef human fill:#f8fafc,stroke:#475569,color:#0f172a,stroke-width:1px;
-  classDef orchestrator fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px;
-  classDef mcp fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:2px;
-  classDef worker fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:2px;
-  classDef verifier fill:#ffedd5,stroke:#ea580c,color:#431407,stroke-width:2px;
-  classDef report fill:#fce7f3,stroke:#db2777,color:#500724,stroke-width:2px;
-  classDef state fill:#fef9c3,stroke:#ca8a04,color:#422006,stroke-width:2px;
-```
-
-## Current Default Profile
-
-```mermaid
-flowchart TB
-  U(["User"]):::human
-
-  subgraph Default["codex-jules-antigravity"]
-    C["Codex<br/>orchestrator"]:::orchestrator
-    M["Dev Triangle MCP<br/>control plane"]:::mcp
-    J["Jules<br/>cloud code worker"]:::worker
-    A["Antigravity agy<br/>local verifier"]:::verifier
-    R["dev-triangle-report<br/>report-only MCP"]:::report
-    S[("jobs.json + result markdown")]:::state
-  end
-
-  U --> C
-  C --> M
-  M --> J
-  M --> A
-  J --> C
-  A --> R
-  R --> S
-  S --> C
-  C --> F(["Final answer"]):::human
-
-  classDef human fill:#f8fafc,stroke:#475569,color:#0f172a,stroke-width:1px;
-  classDef orchestrator fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px;
-  classDef mcp fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:2px;
-  classDef worker fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:2px;
-  classDef verifier fill:#ffedd5,stroke:#ea580c,color:#431407,stroke-width:2px;
-  classDef report fill:#fce7f3,stroke:#db2777,color:#500724,stroke-width:2px;
-  classDef state fill:#fef9c3,stroke:#ca8a04,color:#422006,stroke-width:2px;
-```
-
-## Role Contracts
-
-| Role | Contract | Current default | Replaceable later? |
+| Slot | Contract | May be unconfigured? | Final authority? |
 | --- | --- | --- | --- |
-| Orchestrator | Talk to the user, choose routes, review results, give final answer | Codex | Yes |
-| Context Broker | Read a whole repo and return a structured brief naming the files the work will touch | Unset by default | Yes, you choose it |
-| Architect | Turn a brief into a patch and a test plan. Produces a patch; never edits files | Unset by default | Yes, you choose it |
-| Cloud Code Worker | Do bounded remote code work and return plan, patch, PR, or artifacts | Jules | Yes |
-| Local Verifier | Run the target repo's own declared commands and capture exit codes as machine evidence | Built-in suite runner | No, this is the evidence source |
-| Diagnostician | Investigate and advise. Its output is agent-asserted, not evidence | Antigravity `agy` | Yes |
-| Reporter | Provide a narrow completion channel for workers | `dev-triangle-report` MCP | Maybe, but should stay narrow |
-| Ledger | Track jobs, handoffs, statuses, notes, and result paths | `jobs.json` | Maybe, with migration |
+| `orchestrator` | Understand the user, select routes, review artifacts, answer | Installation must provide at least one client-side orchestrator | Owns decisions, not test evidence |
+| `contextBroker` | Return a grounded brief and source references | Yes | No |
+| `architect` | Return a patch and test plan without target writes | Yes | No |
+| `cloudWorker` | Return bounded cloud code work, patch, PR, or artifact | Yes | No |
+| `verifier` | Identify the verification role; machine evidence still comes from the built-in suite runner | Yes | No agent may declare success alone |
+| `diagnostician` | Investigate local failures and return advice | Yes | No; output is `agent_asserted` |
+| `reporter` | Provide a narrow completion channel | Yes when no external report channel is needed | No |
 
-Two rows changed meaning and are worth reading twice.
+The slot key cannot be renamed. `displayName`, model, endpoint, credential
+variable name, CLI command, and arguments belong to the user's profile.
 
-**Local Verifier is no longer Antigravity.** Antigravity moved to Diagnostician.
-An agent that runs the tests and also writes down whether they passed is the
-exact failure this upgrade exists to remove — not because any particular agent
-lies, but because there is then nothing to check the report against. Antigravity
-is still valuable for investigating *why* something failed; it no longer decides
-*whether* it passed.
+## Role Boundary Diagram
 
-**Context Broker and Architect have no default.** Not "a default nobody has
-picked yet" — no default, ever. An unconfigured role refuses to run and names the
-line you need to fill in. See `docs/SAI.md` C10 and `INV-12`.
+```mermaid
+flowchart TB
+  U["User"] -->|request| O["Orchestrator"]
 
-## What The Jules Route Still Carries
+  subgraph C["Control boundary"]
+    O -->|MCP calls| M["Dev Triangle MCP"]
+    M --> L[("Job ledger")]
+  end
 
-The Broker → Architect route does not replace Jules, and the reason is easy to
-miss: `prepare_jules_repo` is the only place in this project that knows how to
-put a local project onto GitHub safely. Four protections live there.
+  subgraph A["Agent work boundary"]
+    B["Context Broker"]
+    P["Architect"]
+    W["Cloud Worker"]
+    D["Diagnostician"]
+  end
 
-| Protection | Where | Does the Broker → Architect route need it? |
-| --- | --- | --- |
-| Publish safety scan, up to 3,000 files | `scan_repo_for_publish_safety()` | **Rules yes, scan no.** The new route never publishes a repo, so a file-level scan has nothing to guard. What it does need is payload-level scanning, which is why the secret rules were extracted into `providers/redaction.py` — both callers now import one rule set instead of drifting apart |
-| Default `.gitignore` | `ensure_default_gitignore()` | **No.** Nothing is pushed, so there is no ignore list to get wrong |
-| Repos created private by default | `tool_prepare_jules_repo` | **No.** No repo is created |
-| Dry-run by default | `tool_prepare_jules_repo` | **Replaced, not dropped.** The equivalent is `apply_patch` refusing a dirty working tree and recording `appliedAtRef`: this route's undo is a git ref rather than a rehearsal |
+  M -->|bounded context task| B
+  B -->|brief| O
+  M -->|bounded patch task| P
+  P -->|patch| O
+  M -->|bounded cloud task| W
+  W -->|patch, PR, or artifact| O
+  M -->|bounded investigation| D
+  D -->|report-only channel| L
+  O --> G{"Artifact accepted?"}
+  G -->|no| M
+  G -->|yes| V["Deterministic verification"]
+  V --> Q{"Machine evidence passes?"}
+  Q -->|no| N[("NEEDS_REVIEW")]
+  Q -->|yes| S[("SUCCESS")]
+  N --> O
+  S --> O
+  O -->|final answer| U
 
-**Conclusion: no follow-up work package needed.** The new route bypasses these
-protections because it never enters the situations they guard, and the one
-genuinely transferable piece — the secret rules — was extracted rather than
-copied.
-
-**Jules stays.** It remains the right route when the work is repetitive across
-many files and you want a pull request at the end. If that route is ever removed,
-the publish scan has to be relocated first, not deleted along with it.
-
-## What Is Implemented Today
-
-Implemented and validated today:
-
-- Codex as the orchestrator.
-- Jules tools through the `jules_*` MCP tool group.
-- Antigravity handoffs through the `antigravity_*` MCP tool group.
-- Report-only completion through `dev-triangle-report`.
-- Local job ledger through `jobs.json`.
-
-Added and validated on 2026-08-19:
-
-- Restricted verification suite runner producing real exit codes.
-- Quality gate refusing `SUCCESS` without machine evidence.
-- Provider profile loader with no default models.
-- Natural-language configuration bridge.
-- Outbound payload masking with a fail-closed repo allowlist.
-
-Documented but not fully implemented yet:
-
-- Claude as the orchestrator.
-- Gemini CLI as a code worker.
-- Generic provider registry.
-- Generic provider tool names.
-- **The Broker → Architect route against a real endpoint.** The adapters, the
-  guardrails and the ledger fields are all in place and tested, but every test
-  substitutes the transport. Nothing has been sent to a real model yet, so this
-  belongs in this list rather than the one above.
-
-## Why Tool Names Still Mention Jules And Antigravity
-
-The MCP tool names are intentionally concrete right now:
-
-```text
-jules_create_session
-run_antigravity_handoff
-complete_dev_triangle_handoff
+  classDef process fill:#ffffff,stroke:#111111,color:#111111,stroke-width:1px;
+  classDef decision fill:#eeeeee,stroke:#111111,color:#111111,stroke-width:1px;
+  classDef store fill:#ffffff,stroke:#111111,color:#111111,stroke-width:1px;
+  class U,O,M,B,P,W,D,V process;
+  class G,Q decision;
+  class L,N,S store;
+  linkStyle default stroke:#111111,stroke-width:1px;
 ```
 
-That is because these are the compatibility wrappers that exist today. They are
-honest about what the runtime can actually do.
+**Figure 1. Separation of control authority, agent work, and machine
+evidence.** Agent output returns to review; it does not bypass the acceptance
+gate.
 
-A future provider registry may add generic provider tools, but the current
-names should remain stable so existing clients do not break.
+## Current Validated Binding
+
+The real local acceptance run used:
+
+| Role | Binding | Enforced boundary |
+| --- | --- | --- |
+| Orchestrator | Codex | Full MCP; reviews the brief and patch |
+| Context Broker | Gemini CLI | Stdin prompt plus committed deny-all tool policy |
+| Architect | Claude CLI | Non-writing mode; returns unified diff |
+| Verifier | Built-in deterministic suite runner | Target repo allowlist; records exit code and logs |
+| Ledger | `jobs.json` | Persists route, destinations, artifacts, and evidence |
+
+This table describes one accepted deployment. It does not make those vendors
+permanent. A different binding is valid after it satisfies the same contract and
+real-path acceptance gates.
+
+## Why Context Broker and Architect Are Separate
+
+The Context Broker reduces and grounds the source context. The Architect works
+from that reviewed brief and the identified source files. The separation:
+
+- reduces the amount of context sent to the patch-producing model;
+- gives the orchestrator a review point before code generation;
+- records which source references supported the implementation request; and
+- allows either role to be rebound without changing the workflow contract.
+
+An `architect-only` route is also valid when the source set is already small and
+explicit. The job records that route so later analysis can distinguish it from
+Broker-Architect work.
+
+## Evidence Is Not A Role Claim
+
+An agent may recommend that a change is correct. That result is
+`agent_asserted`. `SUCCESS` requires `run_verification_suite` to execute the
+target repository's declared commands and record `evidenceLevel: machine` with
+exit code 0.
+
+Antigravity therefore remains useful as a diagnostician. It is not the final
+verifier, even if it ran commands during its investigation.
+
+## Compatibility Routes
+
+The public names below remain supported:
+
+```text
+jules_*        cloud-worker compatibility adapter
+antigravity_*  diagnostician and report-channel compatibility adapter
+```
+
+Jules remains useful for repetitive, PR-shaped cloud work and guarded private
+repository preparation. Antigravity remains useful for local diagnosis and
+environment-specific inspection. Neither compatibility route defines the
+provider-independent architecture.
 
 ## Safe Replacement Rule
 
-To replace a role, the replacement should satisfy the same contract.
+A replacement binding must prove:
 
-For example, replacing Jules with another cloud worker requires:
+1. Availability detection and explicit failure.
+2. Bounded input and structured output.
+3. Secret redaction and repository allowlisting for outbound context.
+4. No access to the full control plane from worker roles.
+5. Review before target mutation.
+6. Machine verification before `SUCCESS`.
+7. A real path, not only mocks.
 
-- A way to detect availability.
-- A way to create a bounded task.
-- A way to get plan/progress/output.
-- A way to return patch, PR, artifact, or report.
-- A way to avoid exposing unrelated secrets.
-
-Replacing Antigravity with another local verifier requires:
-
-- A way to run or resume a local verification task.
-- Access to the local project path.
-- A narrow reporting path.
-- A result marker or equivalent completion signal.
-- Clear timeout and failure behavior.
+There is no silent failover. If a provider is unavailable or out of quota, the
+job reports the failed role and destination. The user selects another profile.
 
 ## Product Wording
 
-Use this wording when explaining the project:
+Use:
 
 ```text
-Dev Triangle MCP is a role-based MCP workflow control plane.
-The current validated default profile uses Codex, Jules, and Antigravity.
-Future provider profiles can map the same roles to other tools.
+Dev Triangle MCP is a role-based MCP control plane with user-selected API and
+CLI bindings. The accepted three-account deployment uses Codex orchestration,
+Gemini context brokering, Claude patch generation, and deterministic local
+verification. The providers are replaceable; the review and evidence gates are
+not.
 ```
 
-Avoid this wording:
+Avoid:
 
 ```text
-Dev Triangle MCP is only for Codex, Jules, and Antigravity.
-Claude/Gemini already work as drop-in replacements.
+Every agent can be the brain automatically.
+The system silently changes models when quota is exhausted.
+An agent report is enough to mark the job successful.
 ```
-
-Both statements are misleading in different directions.
