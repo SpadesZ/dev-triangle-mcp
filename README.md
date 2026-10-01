@@ -7,12 +7,28 @@ Pass tasks between coding agents, review patches, and keep test results with eac
 **With Dev Triangle:** follow a task through handoffs, patch review, checks, and a recorded outcome.
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Arial, sans-serif", "fontSize": "16px", "primaryTextColor": "#19334D", "lineColor": "#708498", "edgeLabelBackground": "#FFFFFF", "background": "#FFFFFF"}, "flowchart": {"curve": "basis", "nodeSpacing": 32, "rankSpacing": 48}}}%%
 flowchart LR
-  T["Task"] --> H["Select a handoff"]
-  H --> W["Local work or a bounded agent task"]
-  W --> R["Review the patch"]
-  R --> V["Run the project's checks"]
-  V --> O["Record outcome and test evidence"]
+  T(["Task"]) --> H{"Choose a<br/>handoff"}
+  H --> W["Local work or a<br/>bounded agent task"]
+  W --> R{"Review<br/>the patch"}
+  R --> V["Run the<br/>project's checks"]
+  V --> O[("Outcome +<br/>test evidence")]
+
+  classDef input fill:#EDF4FC,stroke:#27649B,color:#19334D,stroke-width:1.7px;
+  classDef control fill:#F2EFF9,stroke:#6B56A0,color:#19334D,stroke-width:1.7px;
+  classDef work fill:#ECF8F5,stroke:#117D85,color:#19334D,stroke-width:1.7px;
+  classDef review fill:#FFF4E4,stroke:#98601D,color:#714616,stroke-width:1.7px;
+  classDef verify fill:#EDF4FC,stroke:#27649B,color:#19334D,stroke-width:1.7px;
+  classDef record fill:#EDF7F0,stroke:#417C58,color:#254F35,stroke-width:1.7px;
+  classDef retry fill:#FFF0EF,stroke:#AB5951,color:#7E3A34,stroke-width:1.7px;
+  linkStyle default stroke:#708498,stroke-width:1.6px;
+  class T input;
+  class H control;
+  class W work;
+  class R review;
+  class V verify;
+  class O record;
 ```
 
 Condensed from the existing role flow below. A recorded `SUCCESS` requires machine checks with exit code 0; a worker's report alone cannot pass the gate.
@@ -171,7 +187,8 @@ roles. Rectangles are processes, diamonds are decision gates, and the cylinder
 is persistent evidence. Provider names are deliberately absent.
 
 ```mermaid
-flowchart LR
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Arial, sans-serif", "fontSize": "16px", "primaryTextColor": "#19334D", "lineColor": "#708498", "edgeLabelBackground": "#FFFFFF", "background": "#FFFFFF"}, "flowchart": {"curve": "basis", "nodeSpacing": 32, "rankSpacing": 48}}}%%
+flowchart TB
   U["User"] -->|request| O["Orchestrator"]
   O -->|job and route| M["MCP control plane"]
   M --> R{"Route selection"}
@@ -193,13 +210,21 @@ flowchart LR
   S -->|auditable result| O
   O -->|final answer| U
 
-  classDef process fill:#ffffff,stroke:#111111,color:#111111,stroke-width:1px;
-  classDef decision fill:#eeeeee,stroke:#111111,color:#111111,stroke-width:1px;
-  classDef store fill:#ffffff,stroke:#111111,color:#111111,stroke-width:1px;
-  class U,O,M,L,B,A,W,D,G,V,N process;
-  class R,Q decision;
-  class S store;
-  linkStyle default stroke:#111111,stroke-width:1px;
+  classDef input fill:#EDF4FC,stroke:#27649B,color:#19334D,stroke-width:1.7px;
+  classDef control fill:#F2EFF9,stroke:#6B56A0,color:#19334D,stroke-width:1.7px;
+  classDef work fill:#ECF8F5,stroke:#117D85,color:#19334D,stroke-width:1.7px;
+  classDef review fill:#FFF4E4,stroke:#98601D,color:#714616,stroke-width:1.7px;
+  classDef verify fill:#EDF4FC,stroke:#27649B,color:#19334D,stroke-width:1.7px;
+  classDef record fill:#EDF7F0,stroke:#417C58,color:#254F35,stroke-width:1.7px;
+  classDef retry fill:#FFF0EF,stroke:#AB5951,color:#7E3A34,stroke-width:1.7px;
+  linkStyle default stroke:#708498,stroke-width:1.6px;
+  class U input;
+  class O,M,R control;
+  class L,B,A,W,D work;
+  class G review;
+  class V,Q verify;
+  class S record;
+  class N retry;
 ```
 
 **Figure 1. Role-agnostic control, work, review, and evidence flow.**
@@ -209,7 +234,8 @@ diamonds are human/orchestrator and machine gates; neither external model can
 write `SUCCESS` by itself.
 
 ```mermaid
-flowchart LR
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Arial, sans-serif", "fontSize": "16px", "primaryTextColor": "#19334D", "lineColor": "#708498", "edgeLabelBackground": "#FFFFFF", "background": "#FFFFFF"}, "flowchart": {"curve": "basis", "nodeSpacing": 32, "rankSpacing": 48}}}%%
+flowchart TB
   U["User"] -->|task| C["Codex<br/>Orchestrator"]
   C -->|start_job| M["Dev Triangle MCP<br/>control plane"]
   M -->|approved source context| G["Gemini CLI<br/>Context Broker<br/>deny-all tools"]
@@ -226,13 +252,21 @@ flowchart LR
   S --> C
   C -->|final result| U
 
-  classDef process fill:#ffffff,stroke:#111111,color:#111111,stroke-width:1px;
-  classDef decision fill:#eeeeee,stroke:#111111,color:#111111,stroke-width:1px;
-  classDef store fill:#ffffff,stroke:#111111,color:#111111,stroke-width:1px;
-  class U,C,M,G,A,V process;
-  class P,E decision;
-  class N,S store;
-  linkStyle default stroke:#111111,stroke-width:1px;
+  classDef input fill:#EDF4FC,stroke:#27649B,color:#19334D,stroke-width:1.7px;
+  classDef control fill:#F2EFF9,stroke:#6B56A0,color:#19334D,stroke-width:1.7px;
+  classDef work fill:#ECF8F5,stroke:#117D85,color:#19334D,stroke-width:1.7px;
+  classDef review fill:#FFF4E4,stroke:#98601D,color:#714616,stroke-width:1.7px;
+  classDef verify fill:#EDF4FC,stroke:#27649B,color:#19334D,stroke-width:1.7px;
+  classDef record fill:#EDF7F0,stroke:#417C58,color:#254F35,stroke-width:1.7px;
+  classDef retry fill:#FFF0EF,stroke:#AB5951,color:#7E3A34,stroke-width:1.7px;
+  linkStyle default stroke:#708498,stroke-width:1.6px;
+  class U input;
+  class C,M control;
+  class G,A work;
+  class P review;
+  class V,E verify;
+  class S record;
+  class N retry;
 ```
 
 **Figure 2. Validated three-account binding and deterministic acceptance gates.**
