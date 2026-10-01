@@ -1,5 +1,88 @@
 # Dev Triangle MCP
 
+Pass tasks between coding agents, review patches, and keep test results with each task.
+
+**Before:** copy tasks, patches, and logs between tools by hand.
+
+**With Dev Triangle:** follow a task through handoffs, patch review, checks, and a recorded outcome.
+
+```mermaid
+flowchart LR
+  T["Task"] --> H["Select a handoff"]
+  H --> W["Local work or a bounded agent task"]
+  W --> R["Review the patch"]
+  R --> V["Run the project's checks"]
+  V --> O["Record outcome and test evidence"]
+```
+
+Condensed from the existing role flow below. A recorded `SUCCESS` requires machine checks with exit code 0; a worker's report alone cannot pass the gate.
+
+Local MCP servers and workflow tools are implemented. Provider setup is required for real agent handoffs; the included smoke checks use simulated workers.
+
+[Try locally](#quick-start) | [Connect your agents](#connect-your-agents) | [Roles and full workflow](#technical-details)
+
+## Quick Start
+
+On Windows with Python 3.12 and PowerShell:
+
+```powershell
+git clone https://github.com/SpadesZ/dev-triangle-mcp.git
+cd dev-triangle-mcp
+python tests/protocol_smoke.py
+python tests/report_server_smoke.py
+.\scripts\doctor.ps1
+```
+
+The two smoke checks exercise the local MCP protocol with simulated workers and isolated test state. They do not require paid provider calls. `doctor.ps1` checks your actual client setup; missing tools or client configuration can produce exit code 1 on a fresh clone. That report is a setup checklist, not proof of a completed coding task.
+
+To run the unit checks in a virtual environment:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest -q tests
+```
+
+The servers use the Python standard library; pytest is only for development checks. Linux can run the Python checks; the install and doctor scripts shown here are for Windows.
+
+## Connect your agents
+
+After the local checks, install or refresh client configuration (this changes your local MCP configuration):
+
+```powershell
+.\scripts\install-local.ps1
+```
+
+Run diagnostics:
+
+```powershell
+.\scripts\doctor.ps1
+```
+
+Run deterministic smoke tests:
+
+```powershell
+.\scripts\smoke.ps1
+```
+
+Run a real user-flow demo on a machine with Antigravity `agy` installed:
+
+```powershell
+.\scripts\demo-user-flow.ps1
+```
+
+Default local layout:
+
+```text
+Tool root:  %USERPROFILE%\DevTools\dev-triangle-mcp
+State root: %USERPROFILE%\.dev-triangle
+```
+
+The source tree is safe to publish. Runtime state lives outside the source tree
+or in ignored folders.
+
+## Technical Details
+
 Dev Triangle MCP is a local, role-based MCP control plane for coordinating AI
 agents through explicit handoffs, review gates, deterministic verification, and
 a persistent job ledger.
@@ -39,16 +122,16 @@ This is a validated binding, not a permanent vendor assignment. Any role can use
 an API or CLI binding when its profile satisfies the same contract. The repo has
 no implicit provider profile; an unselected or incomplete profile fails visibly.
 
-## Status
+### Recorded validation
 
-Validated real closed loop, completed on 2026-08-20:
+The following is a historical validation record from 2026-08-20, not a fresh acceptance result for every installation:
 
 ```text
 Codex -> Gemini Context Broker -> Claude Architect -> Codex review/apply
       -> deterministic verification -> SUCCESS or NEEDS_REVIEW
 ```
 
-What is stable today:
+Capabilities documented by that accepted revision:
 
 - Seven fixed role slots with user-selected display names and providers.
 - `kind: "api"` and `kind: "cli"` routing by binding, not vendor name.
@@ -180,49 +263,6 @@ the provider binding is selected by the user.
 The split matters. If every worker can call every tool, the workflow can loop in
 confusing ways. Dev Triangle MCP keeps the full control plane with the
 orchestrator and gives workers only the reporting surface they need.
-
-## Install
-
-Clone the repo:
-
-```powershell
-git clone https://github.com/SpadesZ/dev-triangle-mcp.git
-cd dev-triangle-mcp
-```
-
-Install or refresh local MCP config:
-
-```powershell
-.\scripts\install-local.ps1
-```
-
-Run diagnostics:
-
-```powershell
-.\scripts\doctor.ps1
-```
-
-Run deterministic smoke tests:
-
-```powershell
-.\scripts\smoke.ps1
-```
-
-Run a real user-flow demo on a machine with Antigravity `agy` installed:
-
-```powershell
-.\scripts\demo-user-flow.ps1
-```
-
-Default local layout:
-
-```text
-Tool root:  %USERPROFILE%\DevTools\dev-triangle-mcp
-State root: %USERPROFILE%\.dev-triangle
-```
-
-The source tree is safe to publish. Runtime state lives outside the source tree
-or in ignored folders.
 
 ## Secrets
 
