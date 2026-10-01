@@ -6,36 +6,29 @@ Pass tasks between coding agents, review patches, and keep test results with eac
 
 **With Dev Triangle:** follow a task through handoffs, patch review, checks, and a recorded outcome.
 
-```mermaid
-%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Arial, sans-serif", "fontSize": "16px", "primaryTextColor": "#19334D", "lineColor": "#708498", "edgeLabelBackground": "#FFFFFF", "background": "#FFFFFF"}, "flowchart": {"curve": "basis", "nodeSpacing": 32, "rankSpacing": 48}}}%%
-flowchart LR
-  T(["Task"]) --> H{"Choose a<br/>handoff"}
-  H --> W["Local work or a<br/>bounded agent task"]
-  W --> R{"Review<br/>the patch"}
-  R --> V["Run the<br/>project's checks"]
-  V --> O[("Outcome +<br/>test evidence")]
+Local MCP servers and workflow tools are implemented. Real agent handoffs need
+provider setup; the local smoke checks use simulated workers.
 
-  classDef input fill:#EDF4FC,stroke:#27649B,color:#19334D,stroke-width:1.7px;
-  classDef control fill:#F2EFF9,stroke:#6B56A0,color:#19334D,stroke-width:1.7px;
-  classDef work fill:#ECF8F5,stroke:#117D85,color:#19334D,stroke-width:1.7px;
-  classDef review fill:#FFF4E4,stroke:#98601D,color:#714616,stroke-width:1.7px;
-  classDef verify fill:#EDF4FC,stroke:#27649B,color:#19334D,stroke-width:1.7px;
-  classDef record fill:#EDF7F0,stroke:#417C58,color:#254F35,stroke-width:1.7px;
-  classDef retry fill:#FFF0EF,stroke:#AB5951,color:#7E3A34,stroke-width:1.7px;
-  linkStyle default stroke:#708498,stroke-width:1.6px;
-  class T input;
-  class H control;
-  class W work;
-  class R review;
-  class V verify;
-  class O record;
+[Try locally](#quick-start) · [Connect your agents](#connect-your-agents) · [Roles and full workflow](#technical-details)
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial, sans-serif","fontSize":"20px","lineColor":"#61768b","primaryColor":"#edf4fc","primaryTextColor":"#18324b","primaryBorderColor":"#225c96"},"flowchart":{"nodeSpacing":24,"rankSpacing":26}}}%%
+flowchart TB
+  H["MCP: task + handoff"] --> W["Worker: patch + report"]
+  W --> R["Review patch"]
+  R -->|accept| V["Declared checks"]
+  R -->|reject| N["NEEDS_REVIEW"]
+  V -->|fail| N
+  V -->|exit 0| L[("SUCCESS + evidence")]
+  classDef review fill:#fff2de,stroke:#995719,color:#713c12;
+  classDef result fill:#e7f4f1,stroke:#087f83,color:#18324b;
+  class N review;
+  class L result;
 ```
 
-Condensed from the existing role flow below. A recorded `SUCCESS` requires machine checks with exit code 0; a worker's report alone cannot pass the gate.
-
-Local MCP servers and workflow tools are implemented. Provider setup is required for real agent handoffs; the included smoke checks use simulated workers.
-
-[Try locally](#quick-start) | [Connect your agents](#connect-your-agents) | [Roles and full workflow](#technical-details)
+A worker report is an assertion. The recorded outcome keeps it separate from
+the machine checks that can establish success. See the full role flow below
+for routing and retry rules.
 
 ## Quick Start
 
@@ -47,6 +40,13 @@ cd dev-triangle-mcp
 python tests/protocol_smoke.py
 python tests/report_server_smoke.py
 .\scripts\doctor.ps1
+```
+
+The report-server check prints:
+
+```text
+Report server smoke test passed.
+Tool count: 2
 ```
 
 The two smoke checks exercise the local MCP protocol with simulated workers and isolated test state. They do not require paid provider calls. `doctor.ps1` checks your actual client setup; missing tools or client configuration can produce exit code 1 on a fresh clone. That report is a setup checklist, not proof of a completed coding task.
@@ -103,7 +103,7 @@ Dev Triangle MCP is a local, role-based MCP control plane for coordinating AI
 agents through explicit handoffs, review gates, deterministic verification, and
 a persistent job ledger.
 
-[![CI](https://github.com/SpadesZ/dev-triangle-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/SpadesZ/dev-triangle-mcp/actions/workflows/ci.yml)
+[CI workflow and run history](https://github.com/SpadesZ/dev-triangle-mcp/actions/workflows/ci.yml)
 
 In plain English:
 
